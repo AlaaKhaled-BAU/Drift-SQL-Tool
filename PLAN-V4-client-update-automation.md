@@ -233,3 +233,37 @@ span. Unbraced/unbounded gates are never excluded.
 5. Commit sequence on branch
 
 ---
+
+
+---
+
+## E. Parallel-test results (2026-08-22, branch feature/client-update-automation)
+
+Two lanes on a live benchmark pair (base.bak vs mod.bak built via prepare_bench.py,
+6 planted changes incl. ClientActive-gated scenarios the old surgical battery never had):
+
+| Planted change | Ground truth | Tool (Lane A) | Manual pass (Lane B) | Verdict |
+|---|---|---|---|---|
+| P1 edit inside @ClientActive=165 branch only | dead-for-66 code | folded into BenchDispatch finding; scope stats exclude the branch both sides | byte-verified in captured defs; scope match/no_match counts agree with hand-traced chain | correct |
+| P2 shared-tail literal changed | real drift | BenchDispatch modified/body, irrelevant=False | byte-verified; statement map flags tail as changed | correct |
+| P3 new `ELSE IF @ClientActive = 66` branch | gated customization | detected inside same finding | client-side scope match count 2->3 confirms branch seen | detection correct; classifier (auto-label) still future work |
+| P4 BenchSmall created in MOD only | client-added proc | role=added SqlProcedure | tool right, original plan label wrong (planting bug) | correct |
+| P5a new table BenchExtra | added table | role=added SqlTable | - | correct |
+| P5b BenchItems.Reference column | added column | modified/columns, "1 column(s) added" | columns.json verified | correct |
+
+**Accuracy: 6/6 planted changes correctly represented; 0 false positives; 0 false negatives.**
+Scope annotation: composed case handled right — P1 noise present but P2/P3 relevant =>
+irrelevant_to_client=False (never over-claims). Attribution worked (ProcedureChangeLog rows found).
+
+**Speed:** 25.3s wall for full pipeline (restore x2 -> dacpac x2 -> compare -> capture -> scope)
+on the tiny pair; real-scale reference ~240s per VALIDATION. Scope resolution itself:
+0.75s on the 218KB OT_SendCustomersInfo, <0.01s on bench procs.
+
+**Readiness verdict:** detection core + scope layer = production-usable today behind the
+optional client_active_id input. Still to build before "the update button": classify.py
+(auto small/major/gated), gatewrap.py (deterministic splice both directions), executor +
+preflight, ledger, webdeploy, UI surface for the scope fields.
+
+**Bench gotchas fixed en route (all previously documented classes):** stale container SA
+password (recreate), read-only /host mount => backup inside container + docker cp out,
+640-perm .bak after cp => chmod 644 (VALIDATION §11 bug #3 again).
