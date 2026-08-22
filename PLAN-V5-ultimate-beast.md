@@ -1,5 +1,11 @@
 # PLAN-V5 — Ultimate Beast: build plan, honest stack verdict, risk register
 
+> **STATUS: BUILT (2026-08-22, commit 96d3948).** All five lanes landed in parallel:
+> A datacopy 18/18 · B livescan 12/12 · C scriptgen 28→30/30 · D profiles+reverify 5/5 (+pipeline 12/12, ledger 6/6)
+> · E UI verified via headless-DOM harness (21 checks, node --check clean). Suite total: 244 unit tests across 22 files.
+> Disclosed limits: UI harness used synthetic payloads (not live Flask traffic); livescan parity vs sqlpackage
+> still to be measured on the bench pair; datacopy not yet exercised against a real restored pair.
+
 > Source: Drift_Tools_Comparison_and_Ultimate_Blueprint.md (cherry-picks C1–C8).
 > This plan answers three questions: what edits matter, how they run in parallel,
 > and where using this tool can hurt us.

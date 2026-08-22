@@ -114,6 +114,37 @@ ledger.last_for_client("66")                   # their latest baseline -> next u
 | Encrypted procs error (SQL74502) | one encrypted proc blocks reports when it DIFFERS — exclude or decrypt it |
 | "no ProcedureChangeLog" | informational — attribution unavailable for that side, detection unaffected |
 
+## 10. Quick-scan a LIVE server pair (seconds, triage only)
+
+```python
+from drift import livescan
+a = livescan.scan(livescan.connect("10.0.10.105", "Olives_Images", "cds", input("pwd: ")))
+b = livescan.scan(livescan.connect("CLIENTSERVER", "Olives_Images_AlMalaki", "user", "pwd"))
+print(livescan.quick_compare(a, b)["summary"])   # missing / extra / body_changed / column drift
+```
+Triage routing ONLY -- the scan module physically cannot emit scripts; deep verification stays with the .bak pipeline.
+
+## 11. Sync config tables (menus/pages/messages) safely
+
+```python
+from drift import datacopy
+tables = datacopy.list_config_tables(cur_src)              # menu|Programs|Messag(e)|Page whitelist
+keys   = datacopy.get_key_columns(cur_src, "OlivesMenu")
+plan   = datacopy.diff_tables(datacopy.fetch_rows_hashed(cur_src, "OlivesMenu", keys),
+                              datacopy.fetch_rows_hashed(cur_dst, "OlivesMenu", keys))
+sql    = datacopy.emit_merge_script("OlivesMenu", cols, keys, plan)   # portable artifact, quotes doubled
+rep    = datacopy.apply_plan(cur_dst, "OlivesMenu", keys, plan)       # parameterized path
+```
+Composite keys correct; apostrophes survive; identity handled. Review the emitted .sql before apply.
+
+## 12. Profiles + auto re-verify
+
+```bash
+curl -X POST :5000/api/profiles -d '{"name":"almalak","master_path":"/…/105.bak","client_path":"/…/al.bak","client_active_id":"66"}'
+curl -X POST :5000/api/run -d '{"profile":"almalak","directions":["client_to_105"]}'
+# update_package / rehearse responses now carry "verification": {residue_counts} -- machine-checked proof it landed.
+```
+
 ---
 
-*Full design + validation history: PLAN.md, PLAN-V3, PLAN-V4, VALIDATION.md in this folder.*
+*Full design + validation history: PLAN.md, PLAN-V3, PLAN-V4, PLAN-V5, VALIDATION.md in this folder.*
