@@ -267,3 +267,26 @@ preflight, ledger, webdeploy, UI surface for the scope fields.
 **Bench gotchas fixed en route (all previously documented classes):** stale container SA
 password (recreate), read-only /host mount => backup inside container + docker cp out,
 640-perm .bak after cp => chmod 644 (VALIDATION §11 bug #3 again).
+
+
+---
+
+## F. Build completion (2026-08-22)
+
+All PLAN-V4 phases built on feature/client-update-automation. 19 test files, 191 tests green.
+
+| Module | Tests | Notes |
+|---|---|---|
+| blocks.py (B.2a scope) | 30 | structured/heuristic/opaque tiers; real-probe validated |
+| classify.py (B.1) | 15 | R1-R6 ladder + additive-column rule; read-only over findings |
+| gatewrap.py (B.2) | 12 | splice_up / preserve_down, reachability-correct ELSE insertion, AI-merge fallback |
+| preflight.py (B.3) | 7 | catalog-driven teardown->alter->rebuild plans, zero fabricated SQL |
+| executor.py (B.4) | 12 | msgno error classes, rehearsal always-drops scratch DB |
+| ledger.py (B.6) | 6 | jsonl audit per client |
+| webdeploy.py (B.5) | 10 | hash manifests, sidecar backups, deletes opt-in |
+| app.py orchestrator (B.7) | route smoke | classify_all / gate_wrap / update_package / rehearse |
+
+Deviations, disclosed: exclusions registry stays as versioned txt (+new ERP/integ patterns)
+-- JSON+UI editor deferred; UI surface for new endpoints is API/curl-first this pass
+(GUI buttons deferred); update_package refuses disk-reloaded runs (needs in-memory defs)
+instead of silently emitting empty scripts.
