@@ -64,6 +64,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
     skipped_deletions = []
 
     skipped_irrelevant = []
+    backfill_warnings = []
     for f in findings:
         if f["role"] == "only_on_other":
             skipped_deletions.append(f["name"])
@@ -112,6 +113,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
                     })
                 if cols.get("added"):
                     by_name = {c["name"]: c for c in f.get(columns_key, [])}
+                    backfill = f.get("backfill") or {}
                     for col_name in cols["added"]:
                         col = by_name.get(col_name)
                         if col:
@@ -119,6 +121,56 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
                                 f"ALTER TABLE [dbo].[{f['bare_name']}] ADD {diffing.column_ddl(col)};"
                             )
                             included_names.append(f"{f['name']}.[{col_name}] (added column)")
+                            # PLAN-V5 Lane C (C3): optional per-column backfill
+                            # value -> typed UPDATE after the ADD. Only for
+                            # columns whose captured metadata exists on the
+                            # wanted side; quoting decided by the CAPTURED type
+                            # via quote_backfill_literal, never guessed.
+                            bf = backfill.get(col_name) if backfill else None
+                            if col_name in backfill:
+                                if not isinstance(bf, str):
+                                    backfill_warnings.append({
+                                        "column": f"{f['bare_name']}.{col_name}",
+                                        "reason": f"backfill value must be a string, got {type(bf).__name__}",
+                                    })
+                                else:
+                                    literal = quote_backfill_literal(bf, col.get("type", ""))
+                                    if literal is None:
+                                        backfill_warnings.append({
+                                            "column": f"{f['bare_name']}.{col_name}",
+                                            "reason": f"cannot quote value {bf!r} as {col['type']!r} "
+                                                      f"-- skipped rather than guessed",
+                                        })
+                                    else:
+                                        statements.append(
+                                            f"UPDATE [dbo].[{f['bare_name']}] SET [{col_name}] = {literal} "
+                                            f"WHERE [{col_name}] IS NULL;"
+                                        )
+                        elif col_name in (f.get("backfill") or {}):
+                            backfill_warnings.append({
+                                "column": f"{f['bare_name']}.{col_name}",
+                                "reason": "column metadata not captured on wanted side -- backfill skipped",
+                            })
+        elif f["type"] == "SqlUserDefinedTableType":
+            # PLAN-V5 Lane C (C8): table types have no ALTER -- a "modified"
+            # type means drop-and-recreate against every dependent proc, which
+            # stays manual. An ADDED type is safe to create guarded: if it
+            # already exists on the target we do nothing rather than fail.
+            if f["role"] == "modified":
+                manual_review.append({
+                    "name": f["name"],
+                    "reason": "type modification requires dropping dependents first",
+                })
+            else:
+                definition = f.get(def_key)
+                if not definition:
+                    manual_review.append({"name": f["name"], "reason": "definition not captured"})
+                else:
+                    inner = definition.replace("'", "''")
+                    statements.append(
+                        f"IF TYPE_ID(N'[dbo].[{f['bare_name']}]') IS NULL EXEC(N'{inner}');"
+                    )
+                    included_names.append(f"{f['name']} (added table type)")
         else:
             manual_review.append({"name": f["name"], "type": f["type"], "reason": "object type not auto-applied in Phase 1"})
 
@@ -162,6 +214,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
         "deletions_enabled": include_deletions,
         "skipped_as_only_on_other": len(skipped_deletions) if not include_deletions else 0,
         "skipped_irrelevant_to_client": skipped_irrelevant,
+        "backfill_warnings": backfill_warnings,
     }
     return {"script": script, "manifest": manifest}
 
@@ -236,6 +289,47 @@ def _as_create_or_alter(definition: str, settings: dict | None = None) -> str:
         quoted = "ON" if settings.get("quoted_identifier") else "OFF"
         return f"SET ANSI_NULLS {ansi};\nSET QUOTED_IDENTIFIER {quoted};\nGO\n{rewritten}\nGO\n"
     return rewritten + "\nGO\n"
+
+
+def quote_backfill_literal(value: str, sql_type_name: str) -> str | None:
+    """Port of the legacy tool's §8.3 type/quoting matrix (SQL_Compare report),
+    with its two known flaws fixed: quote-stripping replaced by '' doubling,
+    and unvalidated numeric interpolation replaced by a strict numeric check.
+
+    int/bigint/smallint/tinyint/decimal/numeric/money/float/real -> raw
+    (validated numeric, else None); bit -> 1/0 from truthy strings;
+    date/time/datetime/smalldatetime/datetime2 -> N'...' quoted;
+    char/nchar/varchar/nvarchar/text/ntext/uniqueidentifier -> N'...' with
+    single quotes DOUBLED (''), never stripped; unknown type -> None
+    (caller skips backfill, adds manifest warning -- never guesses)."""
+    t = (sql_type_name or "").strip().lower()
+    if t in _QUOTED_TYPES or t in _DATETIME_TYPES:
+        return "N'" + str(value).replace("'", "''") + "'"
+    if t == "bit":
+        s = str(value).strip().lower()
+        if s in _BIT_TRUE:
+            return "1"
+        if s in _BIT_FALSE:
+            return "0"
+        return None
+    if t in _RAW_NUMERIC_TYPES:
+        s = str(value).strip()
+        return s if _BACKFILL_NUMERIC_RE.match(s) else None
+    return None
+
+
+_RAW_NUMERIC_TYPES = {"int", "bigint", "smallint", "tinyint",
+                      "decimal", "numeric", "money", "float", "real"}
+_DATETIME_TYPES = {"date", "time", "datetime", "smalldatetime", "datetime2"}
+_QUOTED_TYPES = {"char", "nchar", "varchar", "nvarchar", "text", "ntext",
+                 "uniqueidentifier"}
+_BIT_TRUE = {"1", "true", "t", "yes", "y"}
+_BIT_FALSE = {"0", "false", "f", "no", "n"}
+# Strict numeric form for raw interpolation into SET x = <value>: optional
+# sign, digits with optional fraction (or bare fraction). No exponent, no
+# currency symbols -- anything outside this is refused (None), because a
+# raw-interpolated value IS injection surface if we guess loosely.
+_BACKFILL_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 
 
 def _drop_kind(sqlpackage_type: str) -> str:

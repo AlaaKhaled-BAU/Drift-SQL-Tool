@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<!-- Offline DOM harness for Lane E UI additions (scope badge, class chips,
+     approved highlight, bucket toolbar, exec panel, filter persistence).
+     Static page: stubs the DOM ids app.js touches at load time and a fake
+     fetch(), then drives renderResults() with two synthetic findings.
+     Open headlessly; assertions print as UBCHECK lines into #ubcheck. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>drift-tool UI harness</title>
+<link rel="stylesheet" href="static/style.css">
+<style>body { padding: 20px; } #ubcheck { font-family: monospace; font-size: 13px; white-space: pre-wrap; margin-top: 16px; }</style>
+</head>
+<body>
+
+<div id="logSection"><div id="log"></div></div>
+<button id="go">Compare</button>
+<button id="newRunBtn">New</button>
+<nav><div id="runList"></div></nav>
+<section id="pickerSection">
+  <div class="picker-slot" data-role="master">
+    <select id="recent_master"><option value=""></option></select>
+  </div>
+  <div class="picker-slot" data-role="client">
+    <select id="recent_client"><option value=""></option></select>
+  </div>
+</section>
+<div id="results">
+  <div id="runWarnings"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="workspaces"></div>
+  <div class="downloads" id="downloads"></div>
+</div>
+
+<div id="ubcheck">UBCHECK starting…</div>
+
+<script>
+// fake fetch BEFORE app.js loads: /api/runs -> [], execution_report.json ->
+// synthetic report, everything else -> generic ok. Keeps console clean offline.
+const FAKE_EXEC_REPORT = {
+  summary: { total: 6, ok: 4, benign: 1, fatal: 1 },
+  report: [
+    { sql_preview: "ALTER TABLE t ADD c INT", status: "ok", class: "ok", msgno: 0, msg: "" },
+    { sql_preview: "CREATE INDEX ix_bad ON dbo.tbl(col)", status: "fatal", class: "fatal", msgno: 1913, msg: "The operation failed because an index or statistics with name 'ix_bad' already exists on table 'dbo.tbl'." },
+    { sql_preview: "UPDATE cfg SET v = 'x' WHERE k LIKE '%Menu%'", status: "benign", class: "truncation", msgno: 8152, msg: "String or binary data would be truncated in table 'olives.dbo.config', column 'value'. Truncated statement logged for manual review." },
+  ],
+};
+window.fetch = function (url) {
+  let body = [], status = 200;
+  if (String(url).includes("/api/runs")) body = [];
+  else if (String(url).includes("execution_report.json")) { body = FAKE_EXEC_REPORT; status = 200; }
+  return Promise.resolve({
+    ok: status === 200,
+    json: () => Promise.resolve(JSON.parse(JSON.stringify(body))),
+  });
+};
+
+// tiny assert helpers, results collected after app.js runs
+window.UB_RESULTS = [];
+function ubAssert(name, cond) { window.UB_RESULTS.push((cond ? "PASS" : "FAIL") + "  " + name); }
+
+// storage guard so persistence works identically in harness
+try { localStorage.clear(); } catch (e) {}
+</script>
+
+<script src="static/app.js"></script>
+
+<script>
+(async function driveHarness() {
+  const F_IRRELEVANT = {
+    id: "f1", bare_name: "usp_GetActiveClients", name: "dbo.usp_GetActiveClients",
+    type: "SqlProcedure", role: "modified", category: "structural", change_kind: "body",
+    summary: "Logic changed", priority: "medium", priority_score: 5, priority_breakdown: [],
+    review: "pending", callers: { count: 3, names: ["a", "b", "c"] },
+    scope: { irrelevant_to_client: true, client_id: 66 },
+    classification: { bucket: "irrelevant_to_client", action: "skip", rule: "R1_irrelevant_scope", confidence: 0.95 },
+    statement_map: { ok: false, reason: "harness" },
+  };
+  const F_APPROVED = {
+    id: "f2", bare_name: "usp_ApplyDiscount", name: "dbo.usp_ApplyDiscount",
+    type: "SqlProcedure", role: "modified", category: "structural", change_kind: "body",
+    summary: "Logic changed — param added", priority: "high", priority_score: 12, priority_breakdown: [],
+    review: "approved", callers: null,
+    scope: null,
+    classification: { bucket: "gated_customization", action: "gate_wrap", rule: "R3_gated_branch", confidence: 0.8 },
+    statement_map: { ok: false, reason: "harness" },
+  };
+  const workspaces = {
+    client_to_105: {
+      counts: { added: 1, modified: 1, only_on_other: 0, formatting_only: 0, no_difference: 0,
+                documentation: 0, cascading: 0, excluded: 0, filtered_out: 0 },
+      by_type: { SqlProcedure: 2 }, type_filter: null, lost_fixes: [],
+      findings: [F_IRRELEVANT, F_APPROVED],
+    },
+  };
+
+  try {
+    renderResults("synthetic-run", { client_active_id: 105 }, workspaces);
+
+    // exec-panel probe + batch review are async — let them settle first
+    await new Promise(r => setTimeout(r, 150));
+
+    const tbody = document.querySelector("#findingsTable_client_to_105 tbody");
+    ubAssert("table rendered with 2 rows", tbody.querySelectorAll("tr.finding-row").length === 2);
+    ubAssert("F1 scope badge present + text",
+      !!tbody.querySelector('[data-id="f1"] .ub-scope-badge') &&
+      tbody.querySelector('[data-id="f1"] .ub-scope-badge').textContent.includes("irrelevant to client 66"));
+    ubAssert("F1 scope badge title explains branches",
+      (tbody.querySelector('[data-id="f1"] .ub-scope-badge').getAttribute("title") || "")
+        .indexOf("branches this client never executes") !== -1);
+    ubAssert("F2 has NO scope badge", !tbody.querySelector('[data-id="f2"] .ub-scope-badge'));
+    ubAssert("F1 classification chip gray-irrelevant",
+      !!tbody.querySelector('[data-id="f1"] .ub-chip-irrelevant') &&
+      tbody.querySelector('[data-id="f1"] .ub-class-chip').textContent.trim() === "irrelevant_to_client");
+    ubAssert("F2 classification chip gated-blue",
+      !!tbody.querySelector('[data-id="f2"] .ub-chip-gated'));
+    const chipTitle = tbody.querySelector('[data-id="f2"] .ub-class-chip').getAttribute("title") || "";
+    ubAssert("F2 chip tooltip carries rule+confidence",
+      chipTitle.indexOf("R3_gated_branch") !== -1 && chipTitle.indexOf("0.80") !== -1);
+    ubAssert("approved row carries row-approved class",
+      tbody.querySelector('[data-id="f2"]').classList.contains("row-approved"));
+    ubAssert("pending row lacks row-approved class",
+      !tbody.querySelector('[data-id="f1"]').classList.contains("row-approved"));
+    ubAssert("bucket toolbar buttons exist",
+      !!document.getElementById("ubSelectAll_client_to_105") && !!document.getElementById("ubSelectNone_client_to_105"));
+    ubAssert("exec panel visible with counts",
+      document.getElementById("ubExecPanel_client_to_105").style.display === "block" &&
+      document.getElementById("ubExecPanel_client_to_105").textContent.indexOf("Execution report") !== -1);
+    const panelTxt = document.getElementById("ubExecPanel_client_to_105").textContent;
+    ubAssert("exec panel shows total=6 ok=4 benign=1 fatal=1",
+      panelTxt.match(/6\s*total/) && panelTxt.match(/4\s*ok/) && panelTxt.match(/1\s*benign-skipped/) && panelTxt.match(/1\s*fatal/));
+    ubAssert("exec panel fatal row red-flagged",
+      !!document.querySelector("#ubExecPanel_client_to_105 .ub-exec-row.fatal"));
+    ubAssert("exec panel benign list expandable",
+      !!document.querySelector("#ubExecPanel_client_to_105 details.ub-exec-detail"));
+
+    // filter persistence round-trip: type + search + page
+    const tf = document.getElementById("typeFilter_client_to_105");
+    const si = document.getElementById("search_client_to_105");
+    tf.value = "SqlProcedure"; tf.dispatchEvent(new Event("change"));
+    si.value = "usp_"; si.dispatchEvent(new Event("input"));
+    document.getElementById(`nextPage_client_to_105`) && null;
+    const savedRaw = localStorage.getItem("synthetic-run:client_to_105");
+    ubAssert("filters persisted to localStorage key runId:direction",
+      !!savedRaw && savedRaw.indexOf("usp_") !== -1);
+
+    // restore path: simulate tab switch away+back via switchWorkspace
+    ACTIVE_TYPE_FILTER = ""; ACTIVE_SEARCH = ""; CURRENT_PAGE.client_to_105 = 0;
+    switchWorkspace("client_to_105");
+    ubAssert("search restored from storage on switchWorkspace",
+      document.getElementById("search_client_to_105").value === "usp_" && ACTIVE_SEARCH === "usp_");
+    ubAssert("type filter restored from storage on switchWorkspace",
+      document.getElementById("typeFilter_client_to_105").value === "SqlProcedure" && ACTIVE_TYPE_FILTER === "SqlProcedure");
+
+    // batch review guard: Select All must NOT touch guarded f1, approves f2->(already approved), pending stays guarded
+    // simulate: reset reviews, run Select All against FILTERED_ROWS
+    F_IRRELEVANT.review = "pending";
+    const p = ubBatchReview("client_to_105", "approved");
+    Promise.resolve(p).then(() => {
+      ubAssert("guarded row untouched by Select All", F_IRRELEVANT.review === "pending");
+      ubAssert("unguarded row approved by Select All", F_APPROVED.review === "approved");
+      const st = document.getElementById("ubStatus_client_to_105").textContent;
+      ubAssert("status label reports completion + guarded skip count", /done/.test(st) && /guarded/.test(st));
+      finish();
+    }).catch(e => { window.UB_RESULTS.push("FAIL  batch threw: " + e); finish(); });
+  } catch (e) {
+    window.UB_RESULTS.push("FAIL  harness threw: " + (e && e.stack || e));
+    finish();
+  }
+
+  function finish() {
+    window.UB_RESULTS.unshift("--- UBCHECK results ---");
+    const el = document.getElementById("ubcheck");
+    el.textContent = window.UB_RESULTS.join("\n");
+    console.log(el.textContent);
+    document.title = window.UB_RESULTS.some(r => r.startsWith("FAIL")) ? "UBCHECK FAILED" : "UBCHECK PASSED";
+  }
+})();
+</script>
+</body>
+</html>

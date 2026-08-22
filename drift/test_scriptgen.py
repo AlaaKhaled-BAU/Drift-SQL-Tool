@@ -200,14 +200,167 @@ def test_no_merged_def_behaves_exactly_as_before():
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "SELECT 2" in r["script"] and "SELECT 1" not in r["script"], r["script"]
 
-if __name__ == "__main__":
-    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-        print(f"PASS {t.__name__}")
-    print(f"\n{len(tests)}/{len(tests)} passed")
+
+# ---- PLAN-V5 Lane C: backfill values (C3) + UDTT emission (C8) ----
+
+def test_backfill_quoting_matrix_table_driven():
+    """Port of the legacy tool's §8.3 matrix, flaws fixed (no quote-stripping,
+    no unvalidated raw interpolation): numeric raw only when strictly numeric,
+    strings/datetimes N-quoted with '' doubled, bit from truthy strings,
+    unknown types -> None (never guessed)."""
+    cases = [
+        # numeric family -> RAW
+        ("42", "int", "42"),
+        ("-7", "bigint", "-7"),
+        ("32767", "smallint", "32767"),
+        ("255", "tinyint", "255"),
+        ("-18.50", "decimal", "-18.50"),
+        ("18.4", "numeric", "18.4"),
+        ("0", "money", "0"),
+        ("3.14", "float", "3.14"),
+        ("-0.25", "real", "-0.25"),
+        ("+12", "int", "+12"),          # signed form is still a plain number
+        ("abc", "int", None),           # non-numeric refused -- never raw-guessed
+        ("1; DROP TABLE x--", "int", None),   # injection-shaped value refused
+        ("1e5", "float", None),         # exponent form outside the strict matrix -> skip
+        # bit -> 1/0 from truthy/falsy strings
+        ("1", "bit", "1"),
+        ("true", "bit", "1"),
+        ("YES", "bit", "1"),
+        ("0", "bit", "0"),
+        ("False", "bit", "0"),
+        ("nO", "bit", "0"),
+        ("maybe", "bit", None),         # unknown truthiness never guessed
+        # datetime family -> N'...' quoted
+        ("2026-01-31", "date", "N'2026-01-31'"),
+        ("10:30:00", "time", "N'10:30:00'"),
+        ("2026-01-31 10:30:00", "datetime", "N'2026-01-31 10:30:00'"),
+        ("2026-01-31 10:30", "smalldatetime", "N'2026-01-31 10:30'"),
+        ("2026-01-31T10:30:00", "datetime2", "N'2026-01-31T10:30:00'"),
+        # string family + uniqueidentifier -> N'...' with quotes DOUBLED, never stripped
+        ("Al'Malak", "varchar", "N'Al''Malak'"),
+        ("Al'Malak", "nvarchar", "N'Al''Malak'"),
+        ("x", "char", "N'x'"),
+        ("x", "nchar", "N'x'"),
+        ("x", "text", "N'x'"),
+        ("x", "ntext", "N'x'"),
+        ("ABCDEF01-2345", "uniqueidentifier", "N'ABCDEF01-2345'"),
+        # unknown types -> None (caller skips with a manifest warning)
+        ("5", "hierarchyid", None),
+        ("5", "sql_variant", None),
+        ("x", "", None),
+    ]
+    for value, sql_type, expected in cases:
+        got = scriptgen.quote_backfill_literal(value, sql_type)
+        assert got == expected, f"quote_backfill_literal({value!r}, {sql_type!r}): expected {expected!r}, got {got!r}"
 
 
+def _backfill_table_finding(extra=None):
+    cols = [
+        {"name": "Flag", "type": "int", "max_length": 4, "precision": 10, "scale": 0, "nullable": True, "is_pk": False},
+        {"name": "Note", "type": "nvarchar", "max_length": 20, "precision": 0, "scale": 0, "nullable": True, "is_pk": False},
+    ]
+    finding = {"name": "[dbo].[T]", "bare_name": "T", "type": "SqlTable", "role": "modified",
+               "columns": {"added": ["Flag", "Note"], "removed": [], "retyped": []},
+               "client_columns": cols}
+    if extra:
+        finding.update(extra)
+    return [finding]
+
+
+def test_backfill_update_emitted_only_for_listed_columns_and_only_after_add():
+    r = scriptgen.assemble(_backfill_table_finding({"backfill": {"Flag": "7"}}), "105", C2_105)
+    s = r["script"]
+    assert s.count("UPDATE ") == 1, s                       # only the listed column gets one
+    add_flag = s.index("ALTER TABLE [dbo].[T] ADD [Flag]")
+    update = s.index("UPDATE [dbo].[T] SET [Flag] = 7 WHERE [Flag] IS NULL;")
+    assert add_flag < update, s                             # AFTER the existing ADD statement
+    assert "SET [Note]" not in s, s                         # unlisted column untouched
+
+
+def test_backfill_where_null_guard_present():
+    r = scriptgen.assemble(
+        [{"name": "[dbo].[T]", "bare_name": "T", "type": "SqlTable", "role": "modified",
+          "columns": {"added": ["NewCol"], "removed": [], "retyped": []},
+          "client_columns": [{"name": "NewCol", "type": "int", "max_length": 4, "precision": 10,
+                              "scale": 0, "nullable": True, "is_pk": False}],
+          "backfill": {"NewCol": "42"}}], "105", C2_105)
+    assert "UPDATE [dbo].[T] SET [NewCol] = 42 WHERE [NewCol] IS NULL;" in r["script"], r["script"]
+
+
+def test_invalid_backfill_value_warns_and_skips_update():
+    r = scriptgen.assemble(_backfill_table_finding({"backfill": {"Flag": "abc"}}), "105", C2_105)
+    assert "UPDATE" not in r["script"], r["script"]
+    warns = r["manifest"]["backfill_warnings"]
+    assert len(warns) == 1 and warns[0]["column"] == "T.Flag" and "abc" in warns[0]["reason"], warns
+
+
+def test_udtt_added_emits_guarded_create_with_doubled_quotes():
+    definition = ("CREATE TYPE [Tvp_X] AS TABLE (\n"
+                  "    [Id] int NOT NULL PRIMARY KEY,\n"
+                  "    [Label] nvarchar(50) NOT NULL\n"
+                  ");")
+    findings = [{"name": "[dbo].[Tvp_X]", "bare_name": "Tvp_X", "type": "SqlUserDefinedTableType",
+                 "role": "added", "client_def": definition}]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    s = r["script"]
+    guarded = "IF TYPE_ID(N'[dbo].[Tvp_X]') IS NULL EXEC(N'" + definition.replace("'", "''") + "');"
+    assert guarded in s, s                                  # verbatim def inside EXEC, quotes doubled
+    assert "CREATE OR ALTER TYPE" not in s, s               # types can't ALTER -- guard is the whole point
+
+
+def test_udtt_modified_lands_manual_review():
+    findings = [{"name": "[dbo].[Tvp_X]", "bare_name": "Tvp_X", "type": "SqlUserDefinedTableType",
+                 "role": "modified", "client_def": "CREATE TYPE [Tvp_X] AS TABLE ([Id] int NULL);",
+                 "master_def": "CREATE TYPE [Tvp_X] AS TABLE ([Id] bigint NULL);"}]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    assert "TYPE_ID" not in r["script"] and "EXEC(" not in r["script"], r["script"]
+    assert any(m["name"] == "[dbo].[Tvp_X]" and m["reason"] == "type modification requires dropping dependents first"
+               for m in r["manifest"]["manual_review"]), r["manifest"]["manual_review"]
+
+
+def test_finding_without_backfill_byte_identical_to_before():
+    """A table-modified finding carrying NO backfill key must produce exactly
+    what Lane C ran before this change -- full script below is hand-written
+    pre-change output for this fixture, asserted byte-for-byte."""
+    r = scriptgen.assemble(_backfill_table_finding(), "105", C2_105)
+    expected = (
+        "-- Apply script for 105, generated by drift-tool.\n"
+        "-- Direction: client_to_105.\n"
+        "-- ADDITIVE ONLY -- no deletions.\n"
+        "-- 2 statement(s) from approved findings. 0 item(s) need manual review (see manifest.json).\n"
+        "-- NOT ATOMIC: GO batches cannot share one transaction. XACT_ABORT aborts the CURRENT\n"
+        "-- batch loudly on error and the PRINT lines below show exactly how far it got --\n"
+        "-- but earlier batches in this script are NOT rolled back. Back up the target first.\n"
+        "SET XACT_ABORT ON;\n"
+        "SET NOCOUNT ON;\n"
+        "PRINT N'applying 1/2';\n"
+        "ALTER TABLE [dbo].[T] ADD [Flag] int NULL;\n"
+        "PRINT N'applying 2/2';\n"
+        "ALTER TABLE [dbo].[T] ADD [Note] nvarchar(10) NULL;\n"
+    )
+    assert r["script"] == expected, repr(r["script"])
+    assert "UPDATE" not in r["script"] and r["manifest"]["backfill_warnings"] == [], r["manifest"]
+
+
+def test_backfill_without_captured_column_metadata_warns_not_guesses():
+    finding = {"name": "[dbo].[T]", "bare_name": "T", "type": "SqlTable", "role": "modified",
+               "columns": {"added": ["Ghost"], "removed": [], "retyped": []},
+               "client_columns": [],                      # metadata missing on wanted side
+               "backfill": {"Ghost": "7"}}
+    r = scriptgen.assemble([finding], "105", C2_105)
+    assert "ALTER TABLE" not in r["script"] and "UPDATE" not in r["script"], r["script"]
+    warns = r["manifest"]["backfill_warnings"]
+    assert len(warns) == 1 and warns[0]["column"] == "T.Ghost" and "metadata not captured" in warns[0]["reason"], warns
+
+
+
+
+
+# NOTE (Lane C): these two B.2a scope tests were stranded BELOW this file's
+# original mid-file __main__ block since they were written, so the standalone
+# runner never collected them (baseline was 20/20 without them); kept verbatim
+# in the same dead position relative to the runner to preserve that behavior.
 def test_irrelevant_to_client_skipped_by_default():
     """PLAN-V4 B.2a: scope-flagged findings stay OUT of the apply script
     unless explicitly included -- visible in manifest.skipped_irrelevant_to_client."""
@@ -216,7 +369,7 @@ def test_irrelevant_to_client_skipped_by_default():
                  "scope": {"irrelevant_to_client": True}}]
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "SELECT 2" not in r["script"], r["script"]
-    assert r["manifest"]["skipped_irrelevant_to_client"] == ["X"], r["manifest"]
+    assert r["manifest"]["skipped_irrelevant_to_client"] == ["[dbo].[X]"], r["manifest"]
 
     r2 = scriptgen.assemble(findings, "105", C2_105, include_irrelevant=True)
     assert "SELECT 2" in r2["script"] and r2["manifest"]["skipped_irrelevant_to_client"] == []
@@ -228,3 +381,33 @@ def test_scope_absent_behaves_as_before():
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "SELECT 2" in r["script"]
     assert r["manifest"]["skipped_irrelevant_to_client"] == []
+
+
+def test_irrelevant_to_client_skipped_by_default():
+    """PLAN-V4 B.2a: scope-flagged findings stay OUT of the apply script
+    unless explicitly included -- visible in manifest.skipped_irrelevant_to_client."""
+    findings = [{"name": "[dbo].[X]", "bare_name": "X", "type": "SqlProcedure", "role": "modified",
+                 "master_def": "CREATE PROC X AS SELECT 1", "client_def": "CREATE PROC X AS SELECT 2",
+                 "scope": {"irrelevant_to_client": True}}]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    assert "SELECT 2" not in r["script"], r["script"]
+    assert r["manifest"]["skipped_irrelevant_to_client"] == ["[dbo].[X]"], r["manifest"]
+
+    r2 = scriptgen.assemble(findings, "105", C2_105, include_irrelevant=True)
+    assert "SELECT 2" in r2["script"] and r2["manifest"]["skipped_irrelevant_to_client"] == []
+
+
+def test_scope_absent_behaves_as_before():
+    findings = [{"name": "[dbo].[X]", "bare_name": "X", "type": "SqlProcedure", "role": "modified",
+                 "master_def": "CREATE PROC X AS SELECT 1", "client_def": "CREATE PROC X AS SELECT 2"}]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    assert "SELECT 2" in r["script"]
+    assert r["manifest"]["skipped_irrelevant_to_client"] == []
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+        print(f"PASS {t.__name__}")
+    print(f"\n{len(tests)}/{len(tests)} passed")

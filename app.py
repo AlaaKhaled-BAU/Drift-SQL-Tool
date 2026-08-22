@@ -13,7 +13,8 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
-                   executor, gatewrap, ledger, metrics, pipeline, scriptgen, statements)
+                   executor, gatewrap, ledger, metrics, pipeline, profiles, scriptgen,
+                   statements)
 
 app = Flask(__name__)
 
@@ -218,6 +219,20 @@ def api_runs():
 def api_compare():
     body = request.get_json(force=True)
     master_path, client_path = body.get("master"), body.get("client")
+    # PLAN-V5 Lane D / blueprint C5: optional named-profile defaults. A profile
+    # is a saved bookmark of (master, client, client_active_id); when given and
+    # found it fills ONLY the fields this request didn't explicitly provide --
+    # an explicit body value always wins, so "same profile, different client
+    # just this once" stays a one-field override. Unknown name -> 400 (a typo'd
+    # profile silently running a full default compare would look identical to a
+    # correct run while comparing the wrong pair of databases).
+    prof_name = body.get("profile")
+    if prof_name:
+        prof = profiles.get_profile(str(prof_name))
+        if prof is None:
+            return jsonify({"error": f"unknown profile: {prof_name}"}), 400
+        master_path = master_path or prof.get("master_path") or ""
+        client_path = client_path or prof.get("client_path") or ""
     directions = body.get("directions") or ["client_to_105"]
     if not master_path or not client_path:
         return jsonify({"error": "pick both Master (105) and Client"}), 400
@@ -240,6 +255,11 @@ def api_compare():
     # gate-condition operand, and a non-numeric id would silently turn every
     # gate "unknown" (kept, but useless). Absent/null = unscoped run.
     client_active_id = body.get("client_active_id")
+    # Profile fallback for ClientActive too -- deliberately placed BEFORE the
+    # digit validation below so a profile-sourced id walks the exact same
+    # validation path as a hand-typed one (no second, weaker check to forget).
+    if client_active_id is None and prof_name:
+        client_active_id = prof.get("client_active_id")
     if client_active_id is not None:
         client_active_id = str(client_active_id).strip()
         if not client_active_id.isdigit():
@@ -273,6 +293,38 @@ def api_compare():
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id})
+
+
+@app.get("/api/profiles")
+def api_list_profiles():
+    """PLAN-V5 Lane D / C5: saved compare profiles. Pure disk read; {} when
+    none saved yet (or the file is corrupt -- profiles.py degrades, never 500s)."""
+    return jsonify(profiles.list_profiles())
+
+
+@app.post("/api/profiles")
+def api_save_profile():
+    """Save/update one named profile {name, master_path?, client_path?,
+    client_active_id?}. Name is the only required field -- a bookmark may
+    legitimately hold just the paths, with ClientActive asked per-run as today."""
+    body = request.get_json(force=True)
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "profile name must be non-empty"}), 400
+    saved = profiles.save_profile(
+        name,
+        master_path=body.get("master_path") or "",
+        client_path=body.get("client_path") or "",
+        client_active_id=body.get("client_active_id"),
+    )
+    return jsonify(saved)
+
+
+@app.delete("/api/profiles/<name>")
+def api_delete_profile(name):
+    if not profiles.delete_profile(name):
+        return jsonify({"error": f"no profile named {name!r}"}), 404
+    return jsonify({"ok": True})
 
 
 @app.post("/api/run/<run_id>/recompare")
@@ -599,6 +651,28 @@ def api_update_package(run_id, direction):
                  "included": result["manifest"]["included"],
                  "skipped_irrelevant": result["manifest"]["skipped_irrelevant_to_client"],
                  "manual_review_count": len(result["manifest"]["manual_review"])})
+
+    # PLAN-V5 Lane D / C4 auto-reverify: machine-check "did it land" by
+    # re-entering the pipeline at compare phase (cached dacpacs -- no restore).
+    # Best-effort BY DESIGN: verification failure must NEVER fail the package
+    # response -- the artifacts above are already written and the ledger entry
+    # already exists; a failed residue check is information, not an error.
+    # Note recompare() rebuilds index.json fresh (review states reset), the
+    # same accepted tradeoff as the existing manual /recompare endpoint --
+    # and here it runs only after the package is fully assembled + persisted.
+    verification = None
+    try:
+        rec = pipeline.recompare(run_id, direction, lambda m: print(f"[reverify] {m}"))
+        # pipeline.recompare() returns a PER-DIRECTION payload ({run_id, meta,
+        # index, findings}), NOT the multi-workspace {workspaces: {direction:
+        # index_dict}} shape /api/compare's stream sends -- reading only
+        # "workspaces" here would make residue_counts permanently None, so fall
+        # back to its own "index" key (same counts dict either way).
+        ws = rec.get("workspaces", {}).get(direction) or rec.get("index") or {}
+        verification = {"recompare_run_id": rec.get("run_id"),
+                        "residue_counts": ws.get("counts")}
+    except Exception as e:
+        verification = {"error": f"{type(e).__name__}: {e}"}
     return jsonify({"script": result["script"], "manifest": result["manifest"],
                     "script_name": script_name, "ledger_entry": entry})
 
@@ -623,7 +697,21 @@ def api_rehearse_endpoint(run_id, direction):
     report = executor.rehearse(bak, batches, lambda m: print(f"[rehearse] {m}"))
     out = run["run_dir"] / direction / "apply" / "execution_report.json"
     out.write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
-    return jsonify(report)
+
+    # PLAN-V5 Lane D / C4 auto-reverify -- identical shape to update_package's:
+    # recompare the cached dacpac pair so the response carries what STILL
+    # differs after this rehearsal (honest framing: rehearsal ran against a
+    # scratch DB that is now dropped, so residue here = "not yet landed on
+    # any real target"). Best-effort: never fail the report for a failed check.
+    verification = None
+    try:
+        rec = pipeline.recompare(run_id, direction, lambda m: print(f"[reverify] {m}"))
+        ws = rec.get("workspaces", {}).get(direction) or rec.get("index") or {}
+        verification = {"recompare_run_id": rec.get("run_id"),
+                        "residue_counts": ws.get("counts")}
+    except Exception as e:
+        verification = {"error": f"{type(e).__name__}: {e}"}
+    return jsonify({**report, "verification": verification})
 
 
 @app.post("/api/run/<run_id>/client_active_id")
