@@ -12,7 +12,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from drift import ai, ai_merge, compare, config, diff_render, diffing, metrics, pipeline, scriptgen, statements
+from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
+                   executor, gatewrap, ledger, metrics, pipeline, scriptgen, statements)
 
 app = Flask(__name__)
 
@@ -500,6 +501,129 @@ def api_apply(run_id, direction):
     (apply_dir / "manifest.json").write_text(json.dumps(result["manifest"], indent=1), encoding="utf-8")
 
     return jsonify({"script": result["script"], "manifest": result["manifest"], "script_name": script_name})
+
+
+@app.post("/api/run/<run_id>/<direction>/classify_all")
+def api_classify_all(run_id, direction):
+    """PLAN-V4 B.1: bulk deterministic classification of every finding in one
+    workspace. Persists each verdict into index.json (visible in UI/reload)
+    and returns bucket counts + per-finding actions. Advisory to the human:
+    nothing here changes review state -- it proposes, you decide."""
+    run = _load_run(run_id)
+    if not run or direction not in run["workspaces"]:
+        return jsonify({"error": "unknown run or direction"}), 404
+    index = run["workspaces"][direction]
+    full_by_id = {i: f for i, f in enumerate(run.get("findings", {}).get(direction, []))}
+    buckets, actions = {}, {}
+    for i, row in enumerate(index["findings"]):
+        full = full_by_id.get(i) or {}
+        merged = {**row, **{k: full[k] for k in ("scope", "statement_alignment", "change_kind") if k in full}}
+        c = classify.classify_finding(merged)
+        row["classification"] = c
+        buckets.setdefault(c["bucket"], []).append(row["bare_name"])
+        actions[row["bare_name"]] = {"action": c["action"], "rule": c["rule"], "confidence": c["confidence"]}
+        if i in full_by_id:
+            full_by_id[i]["classification"] = c
+    index["classification_counts"] = {k: len(v) for k, v in buckets.items()}
+    (run["run_dir"] / direction / "index.json").write_text(json.dumps(index, indent=1), encoding="utf-8")
+    return jsonify({"ok": True, "counts": index["classification_counts"], "buckets": buckets, "actions": actions})
+
+
+@app.post("/api/run/<run_id>/<direction>/gate_wrap")
+def api_gate_wrap(run_id, direction):
+    """PLAN-V4 B.2: deterministic ClientActive wrapping for gated_customization
+    findings. splice_up folds the client's changed statements into 105's body
+    behind this client's gate; accepted output lands as .merged.sql -- the
+    SAME artifact the AI-merge flow produces, so Apply consumes it unchanged.
+    Deterministic scissors first; DeepSeek stays the fallback, not the default."""
+    run = _load_run(run_id)
+    if not run or direction not in run.get("findings", {}):
+        return jsonify({"error": "unknown run or direction"}), 404
+    if direction != "client_to_105":
+        return jsonify({"error": "splice-up is a client_to_105 action"}), 400
+    cid = run["meta"].get("client_active_id")
+    if not cid:
+        return jsonify({"error": "no client_active_id set for this run yet"}), 400
+    results = {}
+    for f in run["findings"][direction]:
+        cls = (f.get("classification") or {}).get("bucket")
+        if cls != "gated_customization" or direction != "client_to_105":
+            continue
+        if not (f.get("master_def") and f.get("client_def") and f.get("statement_alignment")):
+            continue
+        merged = gatewrap.splice_up(f["master_def"], f["statement_alignment"], cid)
+        results[f["bare_name"]] = {"ok": bool(merged), "mode": "deterministic_splice"}
+        if merged:
+            f["merged_def"] = merged
+            # persist next to the finding so reloads keep it (Apply reads these)
+            idx = run["workspaces"][direction]
+            for row in idx["findings"]:
+                if row["id"] == f.get("id") or row["bare_name"] == f["bare_name"]:
+                    mp = Path(str(run["run_dir"] / direction / row["path"]) + ".merged.sql")
+                    mp.parent.mkdir(parents=True, exist_ok=True)
+                    mp.write_text(merged, encoding="utf-8")
+                    break
+    return jsonify({"ok": True, "results": results})
+
+
+@app.post("/api/run/<run_id>/<direction>/update_package")
+def api_update_package(run_id, direction):
+    """PLAN-V4 B.7: one call = classify -> assemble approved (+gates already
+    accepted) -> write script/manifest -> LEDGER entry. The human approval
+    step from /apply is preserved: only approved rows enter the package."""
+    run = _load_run(run_id)
+    if not run or direction not in run["workspaces"]:
+        return jsonify({"error": "unknown run or direction"}), 404
+    if direction not in run.get("findings", {}):
+        return jsonify({"error": "this run was reloaded from a prior session and no longer has the "
+                                  "full in-memory record package assembly needs -- re-run the "
+                                  "comparison to build an update package."}), 400
+    index = run["workspaces"][direction]
+    approved_rows = [f for f in index["findings"] if f.get("review") == "approved"]
+    id_to_full = {idx_f["id"]: run["findings"][direction][i]
+                  for i, idx_f in enumerate(index["findings"])
+                  if direction in run.get("findings", {}) and i < len(run["findings"][direction])}
+    approved_full = [id_to_full[f["id"]] for f in approved_rows if f["id"] in id_to_full]
+    target_label = "105 (master)" if direction == "client_to_105" else "client"
+    result = scriptgen.assemble(approved_full, target_label, direction,
+                                include_deletions=False, include_irrelevant=True)
+    apply_dir = run["run_dir"] / direction / "apply"
+    apply_dir.mkdir(exist_ok=True)
+    script_name = "add_update_on_105.sql" if direction == "client_to_105" else "add_update_on_client.sql"
+    (apply_dir / script_name).write_text(result["script"], encoding="utf-8")
+    (apply_dir / "manifest.json").write_text(json.dumps(result["manifest"], indent=1), encoding="utf-8")
+    entry = ledger.append_entry(
+        client_id=str(run["meta"].get("client_active_id") or "unset"),
+        run_id=run_id, kind="update_package",
+        payload={"direction": direction, "target": target_label,
+                 "included": result["manifest"]["included"],
+                 "skipped_irrelevant": result["manifest"]["skipped_irrelevant_to_client"],
+                 "manual_review_count": len(result["manifest"]["manual_review"])})
+    return jsonify({"script": result["script"], "manifest": result["manifest"],
+                    "script_name": script_name, "ledger_entry": entry})
+
+
+@app.post("/api/run/<run_id>/<direction>/rehearse")
+def api_rehearse_endpoint(run_id, direction):
+    """PLAN-V4 B.4 rehearsal mode: runs the CURRENT assembled apply script
+    against a scratch restore of the CLIENT backup -- measured facts, not
+    predictions. The real target is never touched; the scratch DB always drops.
+    Requires RUN_LIVE_DB=1 env (hermetic default refuses politely)."""
+    run = _load_run(run_id)
+    if not run or direction not in run["workspaces"]:
+        return jsonify({"error": "unknown run or direction"}), 404
+    script_name = "add_update_on_105.sql" if direction == "client_to_105" else "add_update_on_client.sql"
+    script_path = run["run_dir"] / direction / "apply" / script_name
+    if not script_path.is_file():
+        return jsonify({"error": "assemble an apply script first (Apply button)"}), 400
+    batches = [b.strip() for b in script_path.read_text(encoding="utf-8").split("\nGO") if b.strip()]
+    bak = Path(((run["meta"].get("bak_cache_key") or {}).get("client") or {}).get("path") or "")
+    if not bak.is_file():
+        return jsonify({"error": f"client backup not on disk anymore: {bak}"}), 400
+    report = executor.rehearse(bak, batches, lambda m: print(f"[rehearse] {m}"))
+    out = run["run_dir"] / direction / "apply" / "execution_report.json"
+    out.write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
+    return jsonify(report)
 
 
 @app.post("/api/run/<run_id>/client_active_id")

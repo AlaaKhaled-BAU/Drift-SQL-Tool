@@ -1,0 +1,24 @@
+# Client-named integration procs shipped in every image (PLAN-03 §11).
+# These are expected to differ per client -- not drift, so they're excluded
+# from the report before anything is treated as actionable.
+*_Jebrene
+*_Sokhtian
+*_AbuTawileh
+SAP_Integ*
+*_SAP_Integ*
+ABS_Integ*
+AX_Integ*
+
+# PLAN-V4 B.8: generic ERP/integration families -- same rationale as the
+# client-named block above (expected to differ per client by design).
+*alpha*
+*Alpha*
+*_integ
+*_Integ*
+*_INTEG*
+X3_Integ*
+Dynamics*
+Spartan_SAP*
+*_Wafi
+*_Sukhtian*
+*_Bushnaq*
