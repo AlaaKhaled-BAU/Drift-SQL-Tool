@@ -148,6 +148,8 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
         client_defs = inspect_objects.get_definitions(db_client, detail_names)
         master_cols = inspect_objects.get_columns(db_master, detail_names)
         client_cols = inspect_objects.get_columns(db_client, detail_names)
+        master_table_names = inspect_objects.get_all_table_names(db_master)
+        client_table_names = inspect_objects.get_all_table_names(db_client)
 
         # Extended object types (qwen-review L-3): not sys.sql_modules objects,
         # so OBJECT_DEFINITION can't see them -- each getter reconstructs a
@@ -212,10 +214,18 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
         for direction in directions:
             items = raw_by_direction[direction]["items"]
             excluded_count = raw_by_direction[direction]["excluded_count"]
+            added_tables = {
+                compare.bare_name(i["name"]) for i in items
+                if i["type"] == "SqlTable" and i["role"] == "added"
+            }
+            if direction == "client_to_105":
+                existing_tables = master_table_names | added_tables
+            else:
+                existing_tables = client_table_names | added_tables
             enriched = [
                 _enrich(it, direction, master_defs, client_defs, master_cols, client_cols, attribution_by_name,
                         master_callers, client_callers, master_settings, client_settings,
-                        client_active_id=client_active_id)
+                        client_active_id=client_active_id, existing_tables=existing_tables)
                 for it in items
             ]
 
@@ -337,7 +347,7 @@ def _side_summary(direction: str, role: str, type_label: str) -> str:
 def _enrich(item: dict, direction: str, master_defs: dict, client_defs: dict, master_cols: dict, client_cols: dict,
             attribution_by_name: dict, master_callers: dict, client_callers: dict,
             master_settings: dict | None = None, client_settings: dict | None = None,
-            client_active_id=None) -> dict:
+            client_active_id=None, existing_tables: set[str] | None = None) -> dict:
     # D3 Change B: qualified_name() only diverges from bare_name() for
     # SqlIndex (returns "table.index" instead of just "index") -- every
     # other type's attribution/caller/settings lookups below never had
@@ -369,6 +379,17 @@ def _enrich(item: dict, direction: str, master_defs: dict, client_defs: dict, ma
             f["summary"] = cdiff["summary"]
         elif item["role"] in ("added", "only_on_other"):
             f["summary"] = _side_summary(direction, item["role"], "table")
+            if item["role"] == "added" and existing_tables is not None:
+                source_is_client = direction == "client_to_105"
+                cols = client_cols.get(bare, []) if source_is_client else master_cols.get(bare, [])
+                if cols:
+                    schema = inspect_objects.schema_from_qualified_name(item["name"])
+                    src_defs = client_defs if source_is_client else master_defs
+                    extras = inspect_objects.collect_extras_for_table(src_defs, bare)
+                    bundle = inspect_objects.build_table_bundle(
+                        bare, schema, cols, extras, existing_tables)
+                    if bundle:
+                        f["table_bundle"] = bundle
     elif bare in master_defs or bare in client_defs:
         # Any type text was actually captured for -- real sys.sql_modules
         # source for programmable objects (compare.PROGRAMMABLE_TYPES), or a
