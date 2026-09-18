@@ -4,13 +4,28 @@ Ship an Olives BO update from 105 to a client without breaking their customizati
 
 **UI tools (three tabs):**
 
-| Tab | Purpose |
-|---|---|
-| **Trimmer** | Paste one proc + ClientActive → reading view of what that client executes (`POST /api/trim`). |
-| **SQL Compare** | One picker / one `run_id`: `.bak` schema compare (`POST /api/compare`) or live triage (`POST /api/livescan`, `SCAN_ONLY`, no apply). |
-| **Drift tool** | Same `run_id` — procedure lenses on captured `.master.sql` / `.client.sql` (`POST /api/proc_lens`), copy client `CREATE OR ALTER`. |
+| Tab | Purpose | HTTP |
+|---|---|---|
+| **Trimmer** | Paste one proc + ClientActive → reading view (runtime path + harvest list). Not the copy payload. | `POST /api/trim` |
+| **SQL Compare** | One picker, one `run_id`: tables/columns/FKs from `.bak` (`POST /api/compare`) or live triage (`POST /api/livescan`, `SCAN_ONLY`, no apply). Procedure-body lenses live on Drift, not here. | `/api/compare`, `/api/livescan` |
+| **Drift tool** | Same `run_id` as Compare — three lenses on captured `.master.sql` / `.client.sql`. Preview in UI; **Copy ALTER** goes to the clipboard. | `POST /api/proc_lens` |
 
-Live scan never drives Drift lenses or apply; run a `.bak` compare first. Copy/apply SQL targets the **client** only (never generate DDL aimed at 105 from Drift copy).
+**Drift lenses** (`lens` on `/api/proc_lens`): `full` | `active_read` | `active_plus_else`. Radios transform captured text in memory only (no second restore, no live scan).
+
+**Copy ALTER (client only):** Always paste onto the **client** database. `105_to_client` puts the master’s `CREATE OR ALTER` on the clipboard (push 105’s version to the client). `client_to_105` copies the client’s captured definition. `active_plus_else` may append commented `-- HARVEST` blocks for ELSE/other-client arms — still client-targeted paste. **Never write 105** from Drift copy or from apply.
+
+Live scan never drives Drift lenses or SQL Compare apply; run a `.bak` compare first for procedure drift.
+
+**Interactive apply (Task 10 — session layer vs HTTP):** `drift/apply_session.py` implements skip / stop / bind-by-msgno (`ApplySession` + `Decision`). **Intended** Compare-tab wiring (not in `app.py` until Task 10 merges):
+
+```text
+POST /api/run/<run_id>/<direction>/apply_start   → { session_id, waiting: null | prompt }
+POST /api/apply_session/<session_id>/decide      → JSON { action, msgno } → next prompt or { done: true, report }
+```
+
+Rehearse first, then `apply_start`. Every SQL failure should pause for a decision; **no** DDL against **105** via `apply_start` (client connection only). Until those routes exist, `POST .../apply` and rehearsal still use `executor.run_script` (including auto-continue on historically “benign” msgnos).
+
+**D6:** added-column `ALTER TABLE` / backfill `UPDATE` / UDTT `TYPE_ID` use `[schema].[name]` from the finding, not a hard-coded `[dbo]`.
 
 ```
 pick client.bak + 105.bak ──► detect every difference ──► scope to THIS client
