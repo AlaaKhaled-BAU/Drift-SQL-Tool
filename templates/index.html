@@ -211,6 +211,22 @@
   </main>
 </div>
 
+<div id="applyErrorModal" class="apply-modal" hidden role="dialog" aria-labelledby="applyErrorTitle" aria-modal="true">
+  <div class="apply-modal-backdrop" id="applyErrorBackdrop"></div>
+  <div class="apply-modal-panel">
+    <h2 id="applyErrorTitle">SQL error — choose action</h2>
+    <p id="applyErrorMsgno" class="hint"></p>
+    <pre id="applyErrorPreview" class="apply-error-preview"></pre>
+    <p id="applyErrorMessage" class="apply-error-message"></p>
+    <div class="apply-modal-actions">
+      <button type="button" class="ghost sm" id="applyErrSkip">Skip</button>
+      <button type="button" class="ghost sm" id="applyErrStop">Stop</button>
+      <button type="button" id="applyErrBindSkip">Skip all with this error</button>
+      <button type="button" class="danger sm" id="applyErrBindStop">Stop on this error</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

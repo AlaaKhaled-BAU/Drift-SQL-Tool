@@ -432,3 +432,17 @@ tr.finding-row.row-approved:hover {
 .drift-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 12px; }
 .drift-lenses { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; font-size: 13px; }
 .drift-copy-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+
+/* ---------- interactive apply error modal ---------- */
+.apply-modal { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; }
+.apply-modal[hidden] { display: none !important; }
+.apply-modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+.apply-modal-panel {
+  position: relative; z-index: 1; max-width: 560px; width: calc(100% - 32px);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px 20px; box-shadow: 0 12px 40px rgba(0,0,0,.35);
+}
+.apply-error-preview { font-size: 11px; max-height: 120px; overflow: auto; background: var(--surface-2); padding: 8px; border-radius: var(--radius-sm); }
+.apply-error-message { color: var(--red); font-size: 12.5px; word-break: break-word; }
+.apply-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+button.danger { background: rgba(255,100,100,.15); border-color: var(--red); color: var(--red); }

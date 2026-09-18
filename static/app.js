@@ -22,6 +22,8 @@ let DIFF_VIEW_MODE = localStorage.getItem("driftDiffView") === "unified" ? "unif
 let ACTIVE_TOOL = "trimmer";
 let IS_LIVE_SCAN = false;
 let LAST_DRIFT_COPY_SQL = "";
+let APPLY_INTERACTIVE_SESSION = null;
+let APPLY_INTERACTIVE_WAITING = null;
 
 const DIRECTION_LABEL = { client_to_105: "Client → 105", "105_to_client": "105 → Client" };
 const ROLE_LABEL = {
@@ -560,6 +562,7 @@ function renderWorkspace(direction) {
       </label>
       <button class="ghost sm" id="assembleBtn_${direction}" style="margin-left:10px;">Assemble</button>
       <button class="ghost sm" id="copyApplyBtn_${direction}" style="margin-left:6px;display:none;">Copy script</button>
+      ${direction === "105_to_client" ? `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>` : ""}
       <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled — live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
       <div id="applyOut_${direction}"></div>
     </section>
@@ -615,6 +618,11 @@ function renderWorkspace(direction) {
     const pre = document.querySelector(`#applyOut_${direction} pre`);
     if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent);
   });
+  const applyClientBtn = document.getElementById(`applyClientBtn_${direction}`);
+  if (applyClientBtn) {
+    applyClientBtn.addEventListener("click", () => startInteractiveApply(direction));
+    if (IS_LIVE_SCAN) applyClientBtn.style.display = "none";
+  }
   document.getElementById(`metricsBtn_${direction}`).addEventListener("click", () => computeMetrics(direction));
   document.getElementById(`testAiBtn_${direction}`).addEventListener("click", () => testAiConnection(direction));
   document.getElementById(`batchAiBtn_${direction}`).addEventListener("click", () => askAiBatch(direction));
@@ -1197,7 +1205,13 @@ async function assembleApply(direction) {
   });
   const out = document.getElementById(`applyOut_${direction}`);
   const copyBtn = document.getElementById(`copyApplyBtn_${direction}`);
-  if (!ok) { out.innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`; if (copyBtn) copyBtn.style.display = "none"; return; }
+  const applyClientBtn = document.getElementById(`applyClientBtn_${direction}`);
+  if (!ok) {
+    out.innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`;
+    if (copyBtn) copyBtn.style.display = "none";
+    if (applyClientBtn) applyClientBtn.style.display = "none";
+    return;
+  }
   out.innerHTML = `
     <div class="noise">${body.manifest.included.length} statement(s) included, ${body.manifest.manual_review.length} need manual review.
     ${direction === "105_to_client" ? "Script targets the <b>client</b> database only." : "Review direction before applying — never run client scripts against 105 without intent."}</div>
@@ -1206,7 +1220,107 @@ async function assembleApply(direction) {
       escapeHtml(JSON.stringify(body.manifest.manual_review, null, 1)) + "</pre>" : ""}
   `;
   if (copyBtn) copyBtn.style.display = "inline-block";
+  if (applyClientBtn && direction === "105_to_client" && !IS_LIVE_SCAN) {
+    applyClientBtn.style.display = "inline-block";
+  }
 }
+
+function liveClientConnPayload() {
+  return {
+    server: document.getElementById("liveClientServer")?.value?.trim() || "",
+    database: document.getElementById("liveClientDb")?.value?.trim() || "",
+    user: document.getElementById("liveClientUser")?.value?.trim() || "",
+    password: document.getElementById("liveClientPass")?.value || "",
+  };
+}
+
+function hideApplyErrorModal() {
+  const modal = document.getElementById("applyErrorModal");
+  if (modal) modal.hidden = true;
+}
+
+function showApplyErrorModal(waiting) {
+  const modal = document.getElementById("applyErrorModal");
+  if (!modal || !waiting) return;
+  APPLY_INTERACTIVE_WAITING = waiting;
+  document.getElementById("applyErrorMsgno").textContent = `SQL Server error ${waiting.msgno}`;
+  document.getElementById("applyErrorPreview").textContent = waiting.sql_preview || "";
+  document.getElementById("applyErrorMessage").textContent = waiting.msg || "";
+  modal.hidden = false;
+}
+
+function renderApplyInteractiveStatus(direction, payload) {
+  const out = document.getElementById(`applyOut_${direction}`);
+  if (!out) return;
+  const stopped = payload.stopped ? " <b>(stopped)</b>" : "";
+  const rows = (payload.report || []).map(r =>
+    `${r.index}: [${r.status}] ${r.msgno ? r.msgno + " " : ""}${escapeHtml(r.msg || r.sql_preview || "")}`
+  ).join("<br>");
+  out.innerHTML += `<div class="noise" style="margin-top:10px;">Interactive apply${stopped}: ${payload.done ? "finished" : "paused"}</div><div class="ub-exec">${rows}</div>`;
+}
+
+async function handleApplyInteractivePayload(direction, payload) {
+  APPLY_INTERACTIVE_SESSION = payload.session_id;
+  renderApplyInteractiveStatus(direction, payload);
+  if (payload.waiting) {
+    showApplyErrorModal(payload.waiting);
+    return;
+  }
+  hideApplyErrorModal();
+  APPLY_INTERACTIVE_SESSION = null;
+}
+
+async function startInteractiveApply(direction) {
+  if (IS_LIVE_SCAN || !CURRENT_RUN_ID || direction !== "105_to_client") return;
+  const client = liveClientConnPayload();
+  if (!client.server || !client.database) {
+    alert("Enter the client SQL Server connection in the Compare tab under Live servers (server + database at minimum).");
+    return;
+  }
+  if (!confirm("Apply the assembled script to the live CLIENT database? 105 is never modified. Errors will pause for your decision.")) return;
+  const applyBtn = document.getElementById(`applyClientBtn_${direction}`);
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Applying…"; }
+  try {
+    const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/apply_start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client }),
+    });
+    if (!ok) {
+      const out = document.getElementById(`applyOut_${direction}`);
+      if (out) out.innerHTML += `<div class="log-err">${escapeHtml(body.error)}</div>`;
+      return;
+    }
+    await handleApplyInteractivePayload(direction, body);
+  } finally {
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = "Apply to client (interactive)"; }
+  }
+}
+
+async function applyInteractiveDecide(action) {
+  if (!APPLY_INTERACTIVE_SESSION) return;
+  const pending = APPLY_INTERACTIVE_WAITING;
+  if (!pending) return;
+  const msgno = pending.msgno;
+  hideApplyErrorModal();
+  APPLY_INTERACTIVE_WAITING = null;
+  const { ok, body } = await getJSON(`/api/apply_session/${APPLY_INTERACTIVE_SESSION}/decide`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, msgno }),
+  });
+  if (!ok) {
+    alert(body.error || "Apply decision failed");
+    return;
+  }
+  await handleApplyInteractivePayload("105_to_client", body);
+}
+
+document.getElementById("applyErrSkip")?.addEventListener("click", () => applyInteractiveDecide("skip"));
+document.getElementById("applyErrStop")?.addEventListener("click", () => applyInteractiveDecide("stop"));
+document.getElementById("applyErrBindSkip")?.addEventListener("click", () => applyInteractiveDecide("bind_skip"));
+document.getElementById("applyErrBindStop")?.addEventListener("click", () => applyInteractiveDecide("bind_stop"));
+document.getElementById("applyErrorBackdrop")?.addEventListener("click", hideApplyErrorModal);
 
 async function computeMetrics(direction) {
   const btn = document.getElementById(`metricsBtn_${direction}`);
@@ -1288,12 +1402,18 @@ function updateCompareModeUi() {
   const livePanel = document.getElementById("pickerPanelLive");
   if (localPanel) localPanel.hidden = !!live;
   if (livePanel) livePanel.hidden = !live;
-  if (banner) banner.hidden = !live && !IS_LIVE_SCAN;
+  if (banner) banner.hidden = !(live || IS_LIVE_SCAN);
   const driftLive = document.getElementById("driftLiveBanner");
   if (driftLive) driftLive.hidden = !IS_LIVE_SCAN;
 }
 
-document.getElementById("compareSourceLocal")?.addEventListener("change", updateCompareModeUi);
+document.getElementById("compareSourceLocal")?.addEventListener("change", () => {
+  if (document.getElementById("compareSourceLocal")?.checked) {
+    IS_LIVE_SCAN = false;
+    syncDriftFromRun();
+  }
+  updateCompareModeUi();
+});
 document.getElementById("compareSourceLive")?.addEventListener("change", updateCompareModeUi);
 
 document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
@@ -1302,7 +1422,9 @@ document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       definition: document.getElementById("trimSource").value,
-      client_active_id: document.getElementById("trimClientId").value,
+      client_active_id: document.getElementById("trimClientId").value
+        ? Number(document.getElementById("trimClientId").value)
+        : null,
     }),
   });
   const data = await r.json();
@@ -1377,7 +1499,13 @@ async function runDriftLens() {
   const { ok, body } = await getJSON("/api/proc_lens", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ run_id: CURRENT_RUN_ID, finding_id: findingId, direction, lens, client_active_id: clientActiveId }),
+    body: JSON.stringify({
+      run_id: CURRENT_RUN_ID,
+      finding_id: findingId,
+      direction,
+      lens,
+      client_active_id: clientActiveId ? Number(clientActiveId) : null,
+    }),
   });
   if (!ok) {
     preview.textContent = body.reason || body.error || "proc_lens failed";
@@ -1392,7 +1520,9 @@ async function runDriftLens() {
     else warn.hidden = true;
   }
   const kindEl = document.getElementById("driftCopyKind");
-  if (kindEl) kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} (client CREATE OR ALTER only)`;
+  if (kindEl) {
+    kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} — paste onto client (${body.copy_side || "client"} CREATE OR ALTER)`;
+  }
   LAST_DRIFT_COPY_SQL = body.copy_sql || "";
   copyBtn.disabled = !LAST_DRIFT_COPY_SQL || body.copy_kind === "none";
 }

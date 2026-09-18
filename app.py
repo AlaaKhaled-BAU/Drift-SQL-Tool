@@ -15,6 +15,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
                    executor, gatewrap, ledger, livescan, metrics, pipeline, profiles, proc_lens,
                    scriptgen, statements)
+from drift.apply_session import ApplySession, Decision
 from drift.trimmer import handle_trim
 
 app = Flask(__name__)
@@ -26,6 +27,8 @@ JOBS: dict[str, dict] = {}
 # run computed in THIS process lifetime -- see _load_run()/_finding_full()
 # for how richdiff/AI/metrics work on a run reloaded from a prior process too.
 RUNS: dict[str, dict] = {}
+# Interactive live apply (client target only): session_id -> runtime bundle.
+APPLY_SESSIONS: dict[str, dict] = {}
 
 AI_BATCH_CAP = 25
 
@@ -256,7 +259,23 @@ def api_proc_lens():
     if client_active_id is None and lens != "full":
         return jsonify({"ok": False, "reason": "client_active_id required for active_read / active_plus_else"}), 400
 
-    result = proc_lens.compare_procs(left_def or "", right_def or "", client_active_id, lens)
+    client_settings = body.get("client_settings")
+    master_settings = body.get("master_settings")
+    if run_id:
+        client_settings = client_settings or f.get("client_settings")
+        master_settings = master_settings or f.get("master_settings")
+        if not direction:
+            direction = "client_to_105"
+
+    result = proc_lens.compare_procs(
+        left_def or "",
+        right_def or "",
+        client_active_id,
+        lens,
+        client_settings=client_settings,
+        master_settings=master_settings,
+        direction=direction or "client_to_105",
+    )
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
@@ -294,10 +313,16 @@ def api_livescan():
         return jsonify({"error": str(e), "scan_only": livescan.SCAN_ONLY}), 400
 
     diff = livescan.quick_compare(snap_master, snap_client)
+    oversized = sorted(set(
+        (snap_master.get("oversized_modules") or [])
+        + (snap_client.get("oversized_modules") or [])
+    ))
     return jsonify({
         "scan_only": livescan.SCAN_ONLY,
         "compare": diff,
         "summary": diff.get("summary") or {},
+        "oversized_modules": oversized,
+        "module_text_warn": bool(oversized),
     })
 
 
@@ -798,6 +823,139 @@ def api_rehearse_endpoint(run_id, direction):
     except Exception as e:
         verification = {"error": f"{type(e).__name__}: {e}"}
     return jsonify({**report, "verification": verification})
+
+
+def _apply_waiting_prompt(session: ApplySession) -> dict | None:
+    pending = session._pending  # noqa: SLF001 — HTTP layer mirrors apply_session prompt shape
+    if not pending:
+        return None
+    return {
+        "msgno": pending["msgno"],
+        "msg": pending["msg"],
+        "sql_preview": pending["sql_preview"],
+        "index": pending["index"],
+        "class": pending.get("class", "fatal"),
+    }
+
+
+def _apply_payload(session_id: str, session: ApplySession) -> dict:
+    return {
+        "session_id": session_id,
+        "waiting": _apply_waiting_prompt(session),
+        "done": session.done,
+        "stopped": session.stopped,
+        "report": session.report,
+    }
+
+
+def _close_apply_rec(rec: dict) -> None:
+    conn = rec.get("conn")
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 — best-effort close
+            pass
+    rec["conn"] = None
+    rec["cur"] = None
+
+
+def _drive_apply_session(rec: dict, decision: Decision | None = None) -> dict:
+    """Run statements until paused for operator decision or finished."""
+    session: ApplySession = rec["session"]
+    cur = rec["cur"]
+    batch_stop = rec.get("batch_stop_on_error", False)
+
+    if decision is not None:
+        session.decide(decision)
+
+    while not session.done and session._pending is None:
+        sql = session.current_statement()
+        if not sql:
+            break
+        result = executor.run_statement(cur, sql)
+        prompt = session.feed_result(result)
+        if prompt and prompt.get("need_decision"):
+            if batch_stop:
+                session.decide(Decision(action="stop"))
+                continue
+            break
+
+    if session.done:
+        _close_apply_rec(rec)
+    return _apply_payload(rec["session_id"], session)
+
+
+@app.post("/api/run/<run_id>/<direction>/apply_start")
+def api_apply_start(run_id, direction):
+    """Interactive apply to the live client DB only (never 105)."""
+    if direction == "client_to_105":
+        return jsonify({"error": "apply to 105 is forbidden — use client_to_105 review scripts manually if intended"}), 403
+    if direction != "105_to_client":
+        return jsonify({"error": "unknown direction"}), 400
+
+    run = _load_run(run_id)
+    if not run or direction not in run["workspaces"]:
+        return jsonify({"error": "unknown run or direction"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    client = _conn_params(body.get("client") or {}, "client")
+    if not client:
+        return jsonify({"error": "client needs server, database, user, and password"}), 400
+
+    script_path = run["run_dir"] / direction / "apply" / "add_update_on_client.sql"
+    if not script_path.is_file():
+        return jsonify({"error": "assemble an apply script first (Apply button)"}), 400
+
+    batches = [b.strip() for b in script_path.read_text(encoding="utf-8").split("\nGO") if b.strip()]
+    try:
+        conn = livescan.connect(*client)
+    except Exception as e:  # noqa: BLE001 — connection failure to caller
+        return jsonify({"error": str(e)}), 400
+
+    session = ApplySession(batches)
+    session_id = uuid.uuid4().hex
+    rec = {
+        "session_id": session_id,
+        "session": session,
+        "conn": conn,
+        "cur": conn.cursor(),
+        "run_id": run_id,
+        "direction": direction,
+        "batch_stop_on_error": request.headers.get("X-Batch") == "1",
+        "on_error": body.get("on_error"),
+    }
+    APPLY_SESSIONS[session_id] = rec
+    payload = _drive_apply_session(rec)
+    if payload["done"]:
+        APPLY_SESSIONS.pop(session_id, None)
+    return jsonify(payload)
+
+
+@app.post("/api/apply_session/<session_id>/decide")
+def api_apply_session_decide(session_id):
+    rec = APPLY_SESSIONS.get(session_id)
+    if not rec:
+        return jsonify({"error": "unknown or expired apply session"}), 404
+
+    body = request.get_json(force=True, silent=True) or {}
+    action = body.get("action")
+    if action not in ("skip", "stop", "bind_skip", "bind_stop"):
+        return jsonify({"error": f"bad action {action!r}"}), 400
+
+    msgno = body.get("msgno")
+    try:
+        decision = Decision(action=action, msgno=int(msgno) if msgno is not None else None)
+    except (TypeError, ValueError):
+        return jsonify({"error": "msgno must be an integer when provided"}), 400
+
+    try:
+        payload = _drive_apply_session(rec, decision)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if payload["done"]:
+        APPLY_SESSIONS.pop(session_id, None)
+    return jsonify(payload)
 
 
 @app.post("/api/run/<run_id>/client_active_id")
