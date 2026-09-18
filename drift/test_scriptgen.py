@@ -43,11 +43,25 @@ def test_added_column_is_safe_to_auto_add():
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "ALTER TABLE [dbo].[T] ADD [NewCol] int NULL" in r["script"], r["script"]
 
-def test_added_table_never_auto_created():
+def test_added_table_without_bundle_stays_manual():
     findings = [{"name": "[dbo].[NewTable]", "bare_name": "NewTable", "type": "SqlTable", "role": "added"}]
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "CREATE TABLE" not in r["script"]
     assert any("NewTable" in m["name"] for m in r["manifest"]["manual_review"])
+
+
+def test_added_table_with_bundle_emits_create():
+    findings = [{
+        "name": "[dbo].[NewTable]", "bare_name": "NewTable", "type": "SqlTable", "role": "added",
+        "table_bundle": {
+            "create_sql": "CREATE TABLE [dbo].[NewTable]([ID] int NOT NULL);",
+            "extras": ["CREATE INDEX IX_NewTable ON [dbo].[NewTable]([ID]);"],
+        },
+    }]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    assert "CREATE TABLE [dbo].[NewTable]" in r["script"]
+    assert "IX_NewTable" in r["script"]
+    assert not any("NewTable" in m["name"] for m in r["manifest"]["manual_review"])
 
 def test_deletions_stay_off_unless_explicitly_enabled():
     findings = [{"name": "[dbo].[OldProc]", "bare_name": "OldProc", "type": "SqlProcedure",

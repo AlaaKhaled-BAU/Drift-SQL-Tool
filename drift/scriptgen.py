@@ -7,10 +7,8 @@ objects):
     generating a DROP on the target.
   - column drops/retypes are NEVER auto-included -- listed as manual_review
     with the exact DDL shown, never silently applied.
-  - added tables are NEVER auto-CREATEd here -- a reconstruction without
-    indexes/defaults/FKs could be a subtly wrong table, and generating one
-    while calling it "safe" would overstate what we actually captured. Also
-    listed as manual_review with what we do know.
+  - added tables are auto-CREATEd only when a complete inspect table_bundle
+    (create_sql + extras) was captured on the finding; otherwise manual_review.
   - deletions are opt-in and off by default; this function has no path that
     emits DROP unless include_deletions=True is passed explicitly.
 
@@ -98,11 +96,18 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
 
         elif f["type"] == "SqlTable":
             if f["role"] == "added":
-                manual_review.append({
-                    "name": f["name"],
-                    "reason": "new table -- not auto-generated (indexes/defaults/FKs not captured; "
-                              "a reconstruction could be subtly wrong). Definition on disk for reference.",
-                })
+                bundle = f.get("table_bundle") or {}
+                create_sql = bundle.get("create_sql") if isinstance(bundle, dict) else None
+                if create_sql:
+                    statements.append(create_sql.rstrip().rstrip(";") + ";")
+                    for extra in bundle.get("extras") or []:
+                        statements.append(extra.rstrip().rstrip(";") + ";")
+                    included_names.append(f["name"])
+                else:
+                    manual_review.append({
+                        "name": f["name"],
+                        "reason": "new table -- no complete table_bundle (CREATE + extras) captured",
+                    })
             elif f["role"] == "modified" and f.get("columns"):
                 cols = f["columns"]
                 if cols.get("removed") or cols.get("retyped"):
