@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Olives DB Drift Tool</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell" id="appShell">
+  <nav class="rail" id="leftRail">
+    <div class="brand">
+      <div class="brand-mark">O</div>
+      <div>
+        <div class="brand-name">DB Drift Tool</div>
+        <div class="brand-sub">Master (105) vs Client</div>
+      </div>
+    </div>
+
+    <button class="rail-btn active" id="newRunBtn" style="background:var(--surface-2);border-color:var(--border);">
+      <span>＋</span> New comparison
+    </button>
+
+    <div class="rail-section">
+      <div class="rail-title">Past runs</div>
+      <div id="runList"><div class="rail-empty">Loading…</div></div>
+    </div>
+  </nav>
+
+  <main class="main-content">
+    <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
+      <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab active" data-tool="trimmer" aria-selected="true">Trimmer</button>
+      <button type="button" role="tab" id="toolTabCompare" class="tool-tab" data-tool="compare" aria-selected="false">SQL Compare</button>
+      <button type="button" role="tab" id="toolTabDrift" class="tool-tab" data-tool="drift" aria-selected="false">Drift tool</button>
+    </nav>
+
+    <div id="paneTrimmer" class="tool-pane" data-tool="trimmer">
+      <h1>Trimmer</h1>
+      <div class="sub">Paste one procedure — see what this <code>@ClientActive</code> actually executes. Harvest lists branches that are not on this client's runtime path (reading view only; copy DDL from SQL Compare or Drift tool).</div>
+      <section class="block trimmer-panel">
+        <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
+        <textarea id="trimSource" rows="18" class="trim-source" placeholder="Paste CREATE PROCEDURE …"></textarea>
+        <button type="button" id="trimRunBtn">Trim to this client</button>
+        <pre id="trimOut" class="trim-out"></pre>
+        <div id="trimUnknown" class="run-warning" hidden>Some gates could not be decided; they were kept in the result.</div>
+        <h3>Harvest (not executed by this client — copy later)</h3>
+        <pre id="trimHarvest" class="trim-harvest"></pre>
+      </section>
+    </div>
+
+    <div id="paneCompare" class="tool-pane" data-tool="compare" hidden>
+      <h1>SQL Compare</h1>
+      <div class="sub">Schema drift (tables, columns, constraints) from <code>.bak</code> restores, or a live <strong>scan-only</strong> triage preview. Procedure-body lenses live on the Drift tool tab (same <code>run_id</code>).</div>
+
+      <div class="compare-source-mode block">
+        <span class="type-filter-label">Source</span>
+        <label><input type="radio" name="compareSource" id="compareSourceLocal" value="local" checked> Local <code>.bak</code> (full pipeline)</label>
+        <label><input type="radio" name="compareSource" id="compareSourceLive" value="live"> Live servers (scan only — no apply)</label>
+      </div>
+      <div id="liveScanBanner" class="run-warning" hidden>Live scan is <strong>SCAN_ONLY</strong>: triage preview only. Apply is disabled. Run a <code>.bak</code> compare for apply scripts and use Drift tool for procedure lenses.</div>
+
+      <section class="block" id="pickerSection">
+        <div class="picker-panel" id="pickerPanelLocal">
+          <div class="picker-grid">
+            <div class="picker-slot" id="slot_master" data-role="master">
+              <div class="picker-slot-label">Master image (105)</div>
+              <div class="picker-tabs">
+                <div class="picker-tab active" data-mode="recent">Recent</div>
+                <div class="picker-tab" data-mode="browse">Browse device</div>
+              </div>
+              <div class="picker-recent">
+                <select id="recent_master">
+                  <option value="">Select a recent backup…</option>
+                  {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="picker-browse" style="display:none;">
+                <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+              </div>
+              <div class="selected-chip" style="display:none;"></div>
+            </div>
+
+            <div class="picker-slot" id="slot_client" data-role="client">
+              <div class="picker-slot-label">Client backup</div>
+              <div class="picker-tabs">
+                <div class="picker-tab active" data-mode="recent">Recent</div>
+                <div class="picker-tab" data-mode="browse">Browse device</div>
+              </div>
+              <div class="picker-recent">
+                <select id="recent_client">
+                  <option value="">Select a recent backup…</option>
+                  {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="picker-browse" style="display:none;">
+                <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+              </div>
+              <div class="selected-chip" style="display:none;"></div>
+            </div>
+          </div>
+
+          <div class="directions">
+            <label><input type="checkbox" id="dirC105" checked> Client → 105 <span class="hint">(reflect client's changes onto 105)</span></label>
+            <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
+          </div>
+
+          <div class="type-filter">
+            <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
+            <div class="type-filter-options">
+              {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
+              {% for cat in type_categories %}
+              <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="run-actions">
+            <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
+            <button id="go">Compare</button>
+          </div>
+        </div>
+
+        <div class="picker-panel" id="pickerPanelLive" hidden>
+          <p class="hint">Connect to two live SQL Server databases (module definitions + column shape). No scripts are generated.</p>
+          <div class="live-conn-grid">
+            <fieldset><legend>Master (105)</legend>
+              <input id="liveMasterServer" placeholder="server" class="live-in">
+              <input id="liveMasterDb" placeholder="database" class="live-in">
+              <input id="liveMasterUser" placeholder="user" class="live-in">
+              <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+            </fieldset>
+            <fieldset><legend>Client</legend>
+              <input id="liveClientServer" placeholder="server" class="live-in">
+              <input id="liveClientDb" placeholder="database" class="live-in">
+              <input id="liveClientUser" placeholder="user" class="live-in">
+              <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+            </fieldset>
+          </div>
+          <div class="run-actions">
+            <button type="button" id="liveScanBtn">Run live scan</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="block" id="logSection" style="display:none;">
+        <div class="block-head"><h2>Run log</h2> <span class="hint">live progress while restore/compare runs — closes automatically on success or failure</span></div>
+        <div id="log"></div>
+      </section>
+
+      <div id="liveResults" class="block" style="display:none;"></div>
+
+      <details class="legend block" id="compareLegend">
+        <summary>What do these mean? — legend</summary>
+        <div class="legend-grid">
+          <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Client → 105</b> this means the client added it.</div></div>
+          <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs — a body/parameter/column change.</div></div>
+          <div class="lg-item"><span class="tag only_on_other">only on other side</span><div>Informational: the other side has this, this direction's source doesn't. Never auto-deleted.</div></div>
+          <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't — no behavior change.</div></div>
+          <div class="lg-item"><span class="prio high"></span><div><b>High priority</b> — &gt;5 known callers, or a column was removed/retyped. Review first.</div></div>
+          <div class="lg-item"><span class="prio medium"></span><div><b>Medium priority</b> — other real structural drift.</div></div>
+          <div class="lg-item"><span class="prio low"></span><div><b>Low priority</b> — formatting-only or documentation-only.</div></div>
+          <div class="lg-item"><span class="ai-badge">AI suggestion</span><div>Advisory only, from an LLM reading the diff shown next to it. Never decides, never auto-approves — verify before acting.</div></div>
+        </div>
+      </details>
+
+      <div id="results" style="display:none;">
+        <div id="runWarnings"></div>
+        <div class="tabs" id="tabs"></div>
+        <div id="workspaces"></div>
+        <div class="downloads" id="downloads"></div>
+      </div>
+    </div>
+
+    <div id="paneDrift" class="tool-pane" data-tool="drift" hidden>
+      <h1>Drift tool</h1>
+      <div class="sub">Procedure-body drift between captured <code>.master.sql</code> / <code>.client.sql</code> for the current compare <code>run_id</code>. Lenses transform captured text in memory — they do not re-query SQL Server.</div>
+      <div id="driftBakBanner" class="run-warning">Run a <code>.bak</code> SQL Compare first (same picker / <code>run_id</code>). Live scan cannot drive Drift lenses.</div>
+      <div id="driftLiveBanner" class="run-warning" hidden>Live scan mode — Drift lenses are disabled until you run a <code>.bak</code> compare.</div>
+
+      <section class="block drift-panel" id="driftControls" hidden>
+        <div class="drift-row">
+          <label>Direction
+            <select id="driftDirection">
+              <option value="client_to_105">Client → 105</option>
+              <option value="105_to_client">105 → Client</option>
+            </select>
+          </label>
+          <label>Modified procedure
+            <select id="driftFinding"></select>
+          </label>
+          <label>ClientActive ID
+            <input id="driftClientActiveId" type="number" min="1" step="1">
+          </label>
+        </div>
+        <div class="drift-lenses" role="radiogroup" aria-label="Drift lens">
+          <label><input type="radio" name="driftLens" value="full" checked> Full drift</label>
+          <label><input type="radio" name="driftLens" value="active_read"> ClientActive reads (both DBs)</label>
+          <label><input type="radio" name="driftLens" value="active_plus_else"> ClientActive reads + ELSE</label>
+        </div>
+        <div id="driftMeta" class="hint"></div>
+        <div id="driftWarn" class="run-warning" hidden></div>
+        <pre id="driftPreview" class="drift-preview"></pre>
+        <div class="drift-copy-row">
+          <span id="driftCopyKind" class="hint"></span>
+          <button type="button" id="driftCopyBtn" disabled>Copy ALTER script</button>
+          <span id="driftCopyToast" class="hint" hidden>Copied to clipboard.</span>
+        </div>
+        <pre id="driftCopySql" class="drift-copy-sql" hidden></pre>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

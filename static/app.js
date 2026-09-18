@@ -19,6 +19,9 @@ let FILTERED_ROWS = {};             // direction -> full filtered+sorted finding
 // D4: persistent across findings/reloads -- reviewing 30 findings in a row
 // shouldn't mean re-picking split/unified every single time.
 let DIFF_VIEW_MODE = localStorage.getItem("driftDiffView") === "unified" ? "unified" : "split";
+let ACTIVE_TOOL = "trimmer";
+let IS_LIVE_SCAN = false;
+let LAST_DRIFT_COPY_SQL = "";
 
 const DIRECTION_LABEL = { client_to_105: "Client → 105", "105_to_client": "105 → Client" };
 const ROLE_LABEL = {
@@ -204,17 +207,26 @@ async function loadRunList() {
 async function loadRun(runId) {
   const { ok, body } = await getJSON(`/api/run/${runId}`);
   if (!ok) { appendLog("Could not load run: " + body.error, true); return; }
+  IS_LIVE_SCAN = false;
+  switchTool("compare");
   document.getElementById("pickerSection").style.display = "none";
   document.getElementById("logSection").style.display = "none";
+  document.getElementById("liveResults").style.display = "none";
   document.querySelectorAll(".run-item").forEach(el => el.classList.toggle("active", el.dataset.run === runId));
   renderResults(body.run_id, body.meta, body.workspaces);
+  syncDriftFromRun();
 }
 
 document.getElementById("newRunBtn").addEventListener("click", () => {
+  switchTool("compare");
+  IS_LIVE_SCAN = false;
   document.getElementById("pickerSection").style.display = "block";
   document.getElementById("results").style.display = "none";
+  document.getElementById("liveResults").style.display = "none";
   document.querySelectorAll(".run-item").forEach(el => el.classList.remove("active"));
   CURRENT_RUN_ID = null;
+  updateCompareModeUi();
+  syncDriftFromRun();
 });
 
 /* ============================== Picker ============================== */
@@ -305,15 +317,20 @@ goBtn.addEventListener("click", async () => {
   if (!checkedTypes.length) { alert("Select at least one object type to examine."); return; }
   const typeFilter = checkedTypes.length === allTypeBoxes.length ? null : checkedTypes;
 
+  const cidEl = document.getElementById("compareClientActiveId");
+  const clientActiveId = cidEl && cidEl.value ? cidEl.value : null;
+
+  IS_LIVE_SCAN = false;
   logEl.innerHTML = "";
   document.getElementById("logSection").style.display = "block";
   document.getElementById("results").style.display = "none";
+  document.getElementById("liveResults").style.display = "none";
   goBtn.disabled = true;
   goBtn.textContent = "Running…";
 
   const { ok, body } = await getJSON("/api/compare", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ master, client, directions, type_filter: typeFilter }),
+    body: JSON.stringify({ master, client, directions, type_filter: typeFilter, client_active_id: clientActiveId }),
   });
   if (!ok) {
     appendLog("ERROR: " + body.error, true);
@@ -327,6 +344,7 @@ goBtn.addEventListener("click", async () => {
     const result = JSON.parse(e.data);
     document.getElementById("pickerSection").style.display = "none";
     renderResults(result.run_id, result.meta, result.workspaces);
+    syncDriftFromRun();
     es.close();
     goBtn.disabled = false; goBtn.textContent = "Compare";
     loadRunList();
@@ -344,7 +362,9 @@ function renderResults(runId, meta, workspaces) {
   CURRENT_RUN_ID = runId;
   CURRENT_WORKSPACES = workspaces;
   CURRENT_META = meta || {};
+  IS_LIVE_SCAN = false;
   document.getElementById("results").style.display = "block";
+  updateCompareModeUi();
 
   renderRunWarnings(meta);
 
@@ -539,6 +559,8 @@ function renderWorkspace(direction) {
         <input type="checkbox" id="includeDeletions_${direction}"> include deletions (off by default — never drops the other side's objects unless checked)
       </label>
       <button class="ghost sm" id="assembleBtn_${direction}" style="margin-left:10px;">Assemble</button>
+      <button class="ghost sm" id="copyApplyBtn_${direction}" style="margin-left:6px;display:none;">Copy script</button>
+      <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled — live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
       <div id="applyOut_${direction}"></div>
     </section>
 
@@ -582,7 +604,17 @@ function renderWorkspace(direction) {
     ubClearSavedFilters(direction);
     renderFindingsTable(direction);
   });
-  document.getElementById(`assembleBtn_${direction}`).addEventListener("click", () => assembleApply(direction));
+  const assembleBtn = document.getElementById(`assembleBtn_${direction}`);
+  assembleBtn.addEventListener("click", () => assembleApply(direction));
+  if (IS_LIVE_SCAN) {
+    assembleBtn.disabled = true;
+    const note = document.getElementById(`applyLiveNote_${direction}`);
+    if (note) note.style.display = "block";
+  }
+  document.getElementById(`copyApplyBtn_${direction}`).addEventListener("click", () => {
+    const pre = document.querySelector(`#applyOut_${direction} pre`);
+    if (pre && pre.textContent) navigator.clipboard.writeText(pre.textContent);
+  });
   document.getElementById(`metricsBtn_${direction}`).addEventListener("click", () => computeMetrics(direction));
   document.getElementById(`testAiBtn_${direction}`).addEventListener("click", () => testAiConnection(direction));
   document.getElementById(`batchAiBtn_${direction}`).addEventListener("click", () => askAiBatch(direction));
@@ -1158,18 +1190,22 @@ async function setReview(direction, findingId, state) {
 }
 
 async function assembleApply(direction) {
+  if (IS_LIVE_SCAN) return;
   const includeDeletions = document.getElementById(`includeDeletions_${direction}`).checked;
   const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/apply`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_deletions: includeDeletions }),
   });
   const out = document.getElementById(`applyOut_${direction}`);
-  if (!ok) { out.innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`; return; }
+  const copyBtn = document.getElementById(`copyApplyBtn_${direction}`);
+  if (!ok) { out.innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`; if (copyBtn) copyBtn.style.display = "none"; return; }
   out.innerHTML = `
-    <div class="noise">${body.manifest.included.length} statement(s) included, ${body.manifest.manual_review.length} need manual review.</div>
+    <div class="noise">${body.manifest.included.length} statement(s) included, ${body.manifest.manual_review.length} need manual review.
+    ${direction === "105_to_client" ? "Script targets the <b>client</b> database only." : "Review direction before applying — never run client scripts against 105 without intent."}</div>
     <pre>${escapeHtml(body.script)}</pre>
     ${body.manifest.manual_review.length ? "<b>Manual review needed:</b><pre>" +
       escapeHtml(JSON.stringify(body.manifest.manual_review, null, 1)) + "</pre>" : ""}
   `;
+  if (copyBtn) copyBtn.style.display = "inline-block";
 }
 
 async function computeMetrics(direction) {
@@ -1224,6 +1260,207 @@ function renderMetricsHtml(m, direction) {
   </table>`;
 }
 
+/* ============================== Tool tabs (Trimmer / SQL Compare / Drift) ============================== */
+
+function switchTool(tool) {
+  ACTIVE_TOOL = tool;
+  document.querySelectorAll(".tool-tab").forEach(btn => {
+    const on = btn.dataset.tool === tool;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll(".tool-pane").forEach(pane => {
+    const on = pane.dataset.tool === tool;
+    pane.hidden = !on;
+  });
+  const shell = document.getElementById("appShell");
+  if (shell) shell.classList.toggle("rail-hidden-on-trimmer", tool === "trimmer");
+  if (tool === "drift") syncDriftFromRun();
+}
+
+document.querySelectorAll(".tool-tab").forEach(btn =>
+  btn.addEventListener("click", () => switchTool(btn.dataset.tool)));
+
+function updateCompareModeUi() {
+  const live = document.getElementById("compareSourceLive")?.checked;
+  const banner = document.getElementById("liveScanBanner");
+  const localPanel = document.getElementById("pickerPanelLocal");
+  const livePanel = document.getElementById("pickerPanelLive");
+  if (localPanel) localPanel.hidden = !!live;
+  if (livePanel) livePanel.hidden = !live;
+  if (banner) banner.hidden = !live && !IS_LIVE_SCAN;
+  const driftLive = document.getElementById("driftLiveBanner");
+  if (driftLive) driftLive.hidden = !IS_LIVE_SCAN;
+}
+
+document.getElementById("compareSourceLocal")?.addEventListener("change", updateCompareModeUi);
+document.getElementById("compareSourceLive")?.addEventListener("change", updateCompareModeUi);
+
+document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
+  const r = await fetch("/api/trim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      definition: document.getElementById("trimSource").value,
+      client_active_id: document.getElementById("trimClientId").value,
+    }),
+  });
+  const data = await r.json();
+  document.getElementById("trimOut").textContent = data.ok ? data.trimmed_sql : (data.reason || "failed");
+  document.getElementById("trimUnknown").hidden = !data.unknown_kept;
+  document.getElementById("trimHarvest").textContent =
+    (data.harvest || []).map(h => `${h.kind || ""} ${h.condition || ""}\n${h.body || ""}`).join("\n---\n");
+});
+
+function driftProcFindings(direction) {
+  const idx = CURRENT_WORKSPACES[direction];
+  if (!idx) return [];
+  return idx.findings.filter(f => f.role === "modified" && PROGRAMMABLE_TYPES_JS.has(f.type));
+}
+
+function syncDriftFromRun() {
+  const bakBanner = document.getElementById("driftBakBanner");
+  const controls = document.getElementById("driftControls");
+  const disabled = IS_LIVE_SCAN || !CURRENT_RUN_ID;
+  if (bakBanner) bakBanner.hidden = !disabled;
+  if (controls) controls.hidden = disabled;
+  if (disabled) return;
+
+  const dirSel = document.getElementById("driftDirection");
+  const directions = Object.keys(CURRENT_WORKSPACES);
+  if (dirSel && directions.length) {
+    dirSel.innerHTML = directions.map(d => `<option value="${d}">${DIRECTION_LABEL[d] || d}</option>`).join("");
+    dirSel.value = ACTIVE_DIRECTION && directions.includes(ACTIVE_DIRECTION) ? ACTIVE_DIRECTION : directions[0];
+  }
+  const cid = CURRENT_META.client_active_id || document.getElementById("compareClientActiveId")?.value;
+  const cidInput = document.getElementById("driftClientActiveId");
+  if (cidInput && cid) cidInput.value = cid;
+
+  refreshDriftFindingList();
+}
+
+function refreshDriftFindingList() {
+  const dir = document.getElementById("driftDirection")?.value || ACTIVE_DIRECTION;
+  const sel = document.getElementById("driftFinding");
+  if (!sel) return;
+  const rows = driftProcFindings(dir);
+  if (!rows.length) {
+    sel.innerHTML = `<option value="">No modified procedures in this direction</option>`;
+    document.getElementById("driftPreview").textContent = "";
+    document.getElementById("driftCopyBtn").disabled = true;
+    return;
+  }
+  sel.innerHTML = rows.map(f => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.name)}</option>`).join("");
+  runDriftLens();
+}
+
+document.getElementById("driftDirection")?.addEventListener("change", refreshDriftFindingList);
+document.getElementById("driftFinding")?.addEventListener("change", runDriftLens);
+document.querySelectorAll('input[name="driftLens"]').forEach(r => r.addEventListener("change", runDriftLens));
+document.getElementById("driftClientActiveId")?.addEventListener("change", runDriftLens);
+
+async function runDriftLens() {
+  if (!CURRENT_RUN_ID || IS_LIVE_SCAN) return;
+  const findingId = document.getElementById("driftFinding")?.value;
+  const direction = document.getElementById("driftDirection")?.value;
+  const lens = document.querySelector('input[name="driftLens"]:checked')?.value || "full";
+  const clientActiveId = document.getElementById("driftClientActiveId")?.value || null;
+  if (!findingId) return;
+
+  const preview = document.getElementById("driftPreview");
+  const copyBtn = document.getElementById("driftCopyBtn");
+  const meta = document.getElementById("driftMeta");
+  const warn = document.getElementById("driftWarn");
+  preview.textContent = "Loading lens preview…";
+  copyBtn.disabled = true;
+
+  const { ok, body } = await getJSON("/api/proc_lens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: CURRENT_RUN_ID, finding_id: findingId, direction, lens, client_active_id: clientActiveId }),
+  });
+  if (!ok) {
+    preview.textContent = body.reason || body.error || "proc_lens failed";
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const show = body.diff_unified || body.preview_right || body.preview_left || "(no diff text)";
+  preview.textContent = show;
+  if (meta) meta.textContent = body.identical ? "Identical under this lens." : "Definitions differ under this lens.";
+  if (warn) {
+    if (body.warning) { warn.textContent = body.warning; warn.hidden = false; }
+    else warn.hidden = true;
+  }
+  const kindEl = document.getElementById("driftCopyKind");
+  if (kindEl) kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} (client CREATE OR ALTER only)`;
+  LAST_DRIFT_COPY_SQL = body.copy_sql || "";
+  copyBtn.disabled = !LAST_DRIFT_COPY_SQL || body.copy_kind === "none";
+}
+
+document.getElementById("driftCopyBtn")?.addEventListener("click", async () => {
+  if (!LAST_DRIFT_COPY_SQL) return;
+  await navigator.clipboard.writeText(LAST_DRIFT_COPY_SQL);
+  const toast = document.getElementById("driftCopyToast");
+  if (toast) { toast.hidden = false; setTimeout(() => { toast.hidden = true; }, 2000); }
+});
+
+function renderLiveScanResults(body) {
+  const el = document.getElementById("liveResults");
+  const c = body.compare || {};
+  const sum = body.summary || c.summary || {};
+  el.style.display = "block";
+  el.innerHTML = `
+    <h2>Live scan results <span class="hint">(SCAN_ONLY — routing triage, not apply)</span></h2>
+    <div class="cards">
+      <div class="card"><div class="n">${sum.body_changed ?? c.body_changed?.length ?? 0}</div><div class="l">Body changed</div></div>
+      <div class="card"><div class="n">${sum.missing_in_b ?? c.missing_in_b?.length ?? 0}</div><div class="l">Missing on client</div></div>
+      <div class="card"><div class="n">${sum.extra_in_b ?? c.extra_in_b?.length ?? 0}</div><div class="l">Extra on client</div></div>
+      <div class="card"><div class="n">${sum.columns_altered ?? c.columns?.altered?.length ?? 0}</div><div class="l">Columns altered</div></div>
+    </div>
+    <details open><summary>Module body changes (${(c.body_changed || []).length})</summary><pre>${escapeHtml((c.body_changed || []).join("\n"))}</pre></details>
+    <details><summary>Column deltas</summary><pre>${escapeHtml(JSON.stringify(c.columns || {}, null, 2))}</pre></details>
+  `;
+}
+
+document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
+  const payload = {
+    master: {
+      server: document.getElementById("liveMasterServer").value,
+      database: document.getElementById("liveMasterDb").value,
+      user: document.getElementById("liveMasterUser").value,
+      password: document.getElementById("liveMasterPass").value,
+    },
+    client: {
+      server: document.getElementById("liveClientServer").value,
+      database: document.getElementById("liveClientDb").value,
+      user: document.getElementById("liveClientUser").value,
+      password: document.getElementById("liveClientPass").value,
+    },
+  };
+  IS_LIVE_SCAN = true;
+  CURRENT_RUN_ID = null;
+  document.getElementById("results").style.display = "none";
+  updateCompareModeUi();
+  syncDriftFromRun();
+  const btn = document.getElementById("liveScanBtn");
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+  const { ok, body } = await getJSON("/api/livescan", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  btn.disabled = false;
+  btn.textContent = "Run live scan";
+  if (!ok) {
+    document.getElementById("liveResults").style.display = "block";
+    document.getElementById("liveResults").innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`;
+    return;
+  }
+  renderLiveScanResults(body);
+});
+
 /* ============================== Init ============================== */
 
+switchTool("trimmer");
+updateCompareModeUi();
 loadRunList();

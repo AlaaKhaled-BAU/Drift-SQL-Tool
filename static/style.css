@@ -401,3 +401,34 @@ tr.finding-row.row-approved:hover {
 .ub-exec-row.benign .ub-exec-class { color: var(--amber); }
 .ub-exec-row.fatal { background: rgba(255,135,135,.08); }
 .ub-exec-row.fatal .ub-exec-class, .ub-exec-row.fatal .ub-exec-msg { color: var(--red); }
+
+/* ---------- tool tabs (Trimmer / SQL Compare / Drift tool) ---------- */
+.main-content { padding: 20px 24px 40px; max-width: 1400px; }
+.tool-tabs {
+  display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border-soft); padding-bottom: 10px;
+}
+.tool-tab {
+  background: transparent; border: 1px solid transparent; color: var(--text-dim);
+  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 600;
+}
+.tool-tab:hover { background: var(--surface-2); color: var(--text); }
+.tool-tab.active {
+  background: var(--surface-2); color: var(--text); border-color: var(--border);
+}
+.tool-pane[hidden] { display: none !important; }
+.app-shell.rail-hidden-on-trimmer { grid-template-columns: 1fr; }
+.app-shell.rail-hidden-on-trimmer .rail { display: none; }
+.trimmer-panel textarea.trim-source { width: 100%; margin: 10px 0; font-family: inherit; }
+.trim-out, .trim-harvest, .drift-preview {
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 12px; overflow: auto; max-height: 420px; font-size: 12px;
+}
+.trim-label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.compare-source-mode label { margin-right: 16px; font-size: 13px; }
+.live-conn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 12px 0; }
+.live-conn-grid fieldset { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin: 0; }
+.live-in { display: block; width: 100%; margin: 6px 0; padding: 6px 8px; background: var(--surface-1); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius-sm); }
+.drift-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; margin-bottom: 12px; }
+.drift-lenses { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; font-size: 13px; }
+.drift-copy-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }

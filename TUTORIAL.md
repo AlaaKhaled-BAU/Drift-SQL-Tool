@@ -2,6 +2,16 @@
 
 Ship an Olives BO update from 105 to a client without breaking their customizations.
 
+**UI tools (three tabs):**
+
+| Tab | Purpose |
+|---|---|
+| **Trimmer** | Paste one proc + ClientActive → reading view of what that client executes (`POST /api/trim`). |
+| **SQL Compare** | One picker / one `run_id`: `.bak` schema compare (`POST /api/compare`) or live triage (`POST /api/livescan`, `SCAN_ONLY`, no apply). |
+| **Drift tool** | Same `run_id` — procedure lenses on captured `.master.sql` / `.client.sql` (`POST /api/proc_lens`), copy client `CREATE OR ALTER`. |
+
+Live scan never drives Drift lenses or apply; run a `.bak` compare first. Copy/apply SQL targets the **client** only (never generate DDL aimed at 105 from Drift copy).
+
 ```
 pick client.bak + 105.bak ──► detect every difference ──► scope to THIS client
         │                                                        │

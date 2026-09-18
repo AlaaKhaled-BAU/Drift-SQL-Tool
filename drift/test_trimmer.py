@@ -44,6 +44,18 @@ class TrimProcedure(unittest.TestCase):
         self.assertIsNone(r.get("trimmed_sql"))
 
 
+class ApiTrimRoute(unittest.TestCase):
+    def test_flask_trim_route(self):
+        from app import app as flask_app
+
+        client = flask_app.test_client()
+        r = client.post("/api/trim", json={"definition": PROC, "client_active_id": 66})
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["ok"])
+        self.assertIn("trimmed_sql", data)
+
+
 class HandleTrim(unittest.TestCase):
     def test_handle_trim_ok_200(self):
         data, status = handle_trim({"definition": PROC, "client_active_id": 66})

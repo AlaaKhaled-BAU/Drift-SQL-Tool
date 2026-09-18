@@ -13,8 +13,9 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
-                   executor, gatewrap, ledger, metrics, pipeline, profiles, scriptgen,
-                   statements)
+                   executor, gatewrap, ledger, livescan, metrics, pipeline, profiles, proc_lens,
+                   scriptgen, statements)
+from drift.trimmer import handle_trim
 
 app = Flask(__name__)
 
@@ -213,6 +214,91 @@ def api_runs():
             "total_seconds": meta.get("timings", {}).get("total"),
         })
     return jsonify(out)
+
+
+@app.post("/api/trim")
+def api_trim():
+    data, status = handle_trim(request.get_json(silent=True) or {})
+    return jsonify(data), status
+
+
+@app.post("/api/proc_lens")
+def api_proc_lens():
+    """Compare two captured procedure defs under a drift lens (in-memory only)."""
+    body = request.get_json(silent=True) or {}
+    lens = body.get("lens") or "full"
+    client_active_id = body.get("client_active_id")
+
+    left_def = body.get("left_def")
+    right_def = body.get("right_def")
+    run_id = body.get("run_id")
+    finding_id = body.get("finding_id")
+    direction = body.get("direction")
+
+    if run_id:
+        run = _load_run(str(run_id))
+        if not run:
+            return jsonify({"ok": False, "reason": "unknown run_id"}), 404
+        if direction not in run.get("workspaces", {}):
+            return jsonify({"ok": False, "reason": "unknown direction"}), 400
+        if not finding_id:
+            return jsonify({"ok": False, "reason": "finding_id required with run_id"}), 400
+        f = _finding_full(run, direction, finding_id)
+        if not f:
+            return jsonify({"ok": False, "reason": "unknown finding_id"}), 404
+        left_def = f.get("master_def") or ""
+        right_def = f.get("client_def") or ""
+        if client_active_id is None:
+            client_active_id = run["meta"].get("client_active_id")
+    elif left_def is None or right_def is None:
+        return jsonify({"ok": False, "reason": "provide left_def+right_def or run_id+finding_id+direction"}), 400
+
+    if client_active_id is None and lens != "full":
+        return jsonify({"ok": False, "reason": "client_active_id required for active_read / active_plus_else"}), 400
+
+    result = proc_lens.compare_procs(left_def or "", right_def or "", client_active_id, lens)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+def _conn_params(side: dict, label: str) -> tuple[str, str, str, str] | None:
+    server = (side.get("server") or "").strip()
+    database = (side.get("database") or "").strip()
+    user = (side.get("user") or "").strip()
+    password = side.get("password") or ""
+    if not server or not database:
+        return None
+    return server, database, user, password
+
+
+@app.post("/api/livescan")
+def api_livescan():
+    """Live catalog quick-scan (SCAN_ONLY — no script generation)."""
+    body = request.get_json(force=True)
+    master = _conn_params(body.get("master") or {}, "master")
+    client = _conn_params(body.get("client") or {}, "client")
+    if not master or not client:
+        return jsonify({"error": "master and client each need server + database"}), 400
+
+    def _scan(server, database, user, password):
+        conn = livescan.connect(server, database, user or None, password or None)
+        try:
+            cur = conn.cursor(as_dict=True)
+            return livescan.scan(cur)
+        finally:
+            conn.close()
+
+    try:
+        snap_master = _scan(*master)
+        snap_client = _scan(*client)
+    except Exception as e:  # noqa: BLE001 - surface connection/scan failures to UI
+        return jsonify({"error": str(e), "scan_only": livescan.SCAN_ONLY}), 400
+
+    diff = livescan.quick_compare(snap_master, snap_client)
+    return jsonify({
+        "scan_only": livescan.SCAN_ONLY,
+        "compare": diff,
+        "summary": diff.get("summary") or {},
+    })
 
 
 @app.post("/api/compare")
