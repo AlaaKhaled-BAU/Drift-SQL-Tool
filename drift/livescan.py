@@ -2,9 +2,9 @@
 two LIVE connections.
 
 What this module does: runs two cheap catalog queries against each live
-server -- object presence + SHA2_256 body hash from sys.objects/sys.sql_modules,
+server -- object presence + module definition text from sys.objects/sys.sql_modules,
 and column shape from sys.columns/sys.tables -- then quick_compare() diffs the
-two snapshots with pure deterministic set logic. The hash catches modified
+two snapshots with pure deterministic set logic. Definition text catches modified
 procs the old tool never saw (it compared names only); the column diff catches
 shape drift without restoring anything.
 
@@ -31,13 +31,10 @@ SCAN_ONLY = True
 
 
 def _objects_sql() -> str:
-    """One row per user object: name, type_desc, and the SHA2_256 hex of its
-    module definition (NULL for anything module-less -- tables, and any legacy
-    object sys.sql_modules never recorded).
+    """One row per user object: name, type_desc, and its module definition
+    text (NULL for anything module-less -- tables, and any legacy object
+    sys.sql_modules never recorded).
 
-    CONVERT(..., 2) renders HASHBYTES as bare lowercase hex text server-side,
-    so pymssql's FreeTDS decoder never has to touch varbinary (the same
-    decode-quirk reasoning as inspect_objects' sql_variant workaround).
     LEFT JOIN (not inner) keeps module-less objects visible: dropping them
     would make the presence diff lie about tables. is_ms_shipped = 0 excludes
     system plumbing so both sides diff on USER objects only.
@@ -45,9 +42,7 @@ def _objects_sql() -> str:
     return """
     SELECT o.name,
            o.type_desc,
-           CASE WHEN m.definition IS NULL THEN NULL
-                ELSE CONVERT(varchar(64), HASHBYTES('SHA2_256', m.definition), 2)
-           END AS body_hash
+           m.definition AS definition
     FROM sys.objects o
     LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
     WHERE o.is_ms_shipped = 0
@@ -79,24 +74,23 @@ def scan(cur) -> dict:
     """One connection's catalog snapshot, via a dict-row cursor
     (conn.cursor(as_dict=True) -- house convention, see datacopy docstring):
 
-    {"objects": {bare_name: {"type": type_desc, "body_hash": hex-or-None}},
+    {"objects": {bare_name: {"type": type_desc, "definition": text-or-None}},
      "columns": {"table.column": {"type": t, "max_length": n,
                                   "precision": p, "scale": s}}}
 
     Query order is fixed and documented (_objects_sql first, _columns_sql
     second) -- test_livescan.py scripts fake fetchalls against exactly that
-    order. body_hash arrives as lowercase hex text (or None for tables) and
-    is passed through untouched; if a driver ever hands back raw bytes we
-    decode to hex so downstream comparison stays string-vs-string.
+    order. definition is T-SQL module text (or None for tables) passed through
+    untouched for downstream string comparison.
     """
-    # --- result set 1: objects + body hashes ---
+    # --- result set 1: objects + module definitions ---
     cur.execute(_objects_sql())
     objects = {}
     for row in cur.fetchall():
-        h = row["body_hash"]
-        if isinstance(h, (bytes, bytearray)):  # defensive: driver-dependent decode
-            h = h.hex()
-        objects[row["name"]] = {"type": row["type_desc"], "body_hash": h}
+        objects[row["name"]] = {
+            "type": row["type_desc"],
+            "definition": row["definition"],
+        }
 
     # --- result set 2: column shapes of user tables ---
     cur.execute(_columns_sql())
@@ -120,8 +114,8 @@ def quick_compare(a: dict, b: dict) -> dict:
 
     {"missing_in_b": [names],   # in source, absent on target
      "extra_in_b": [names],     # on target, absent in source
-     "body_changed": [names],   # same name both sides, body_hash differs --
-                                # includes None-vs-hash (module-less flipped
+     "body_changed": [names],   # same name both sides, definition differs --
+                                # includes None-vs-text (module-less flipped
                                 # to module-bearing or vice versa), because
                                 # that flip IS a real catalog change
      "columns": {"added": ["t.c", ...], "removed": [...], "altered": [...]},
@@ -136,10 +130,10 @@ def quick_compare(a: dict, b: dict) -> dict:
     missing_in_b = sorted(set(a_obj) - set(b_obj))
     extra_in_b = sorted(set(b_obj) - set(a_obj))
 
-    # Same-name objects only; differing hash (including one side None) = changed.
+    # Same-name objects only; differing definition (including one side None) = changed.
     body_changed = sorted(
         name for name in set(a_obj) & set(b_obj)
-        if a_obj[name].get("body_hash") != b_obj[name].get("body_hash")
+        if a_obj[name].get("definition") != b_obj[name].get("definition")
     )
 
     cols_added = sorted(set(b_col) - set(a_col))

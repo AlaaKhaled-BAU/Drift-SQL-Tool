@@ -1,5 +1,5 @@
 """ponytail: minimal self-check for Lane B livescan -- scan() must build its
-snapshot from the DOCUMENTED query order (objects+hashes first, columns
+snapshot from the DOCUMENTED query order (objects+definitions first, columns
 second), quick_compare must classify with exact deterministic set logic, and
 -- the C1 safety rule -- the module must expose NO script-generation surface
 at all. No live DB needed: fake cursors return scripted fetchalls, and
@@ -37,9 +37,9 @@ def _scan_a():
     """Source-side snapshot as scan() would build it (hand-built, order-free)."""
     return {
         "objects": {
-            "Pro_X": {"type": "SQL_STORED_PROCEDURE", "body_hash": "aa11"},
-            "Tbl_Menu": {"type": "USER_TABLE", "body_hash": None},
-            "Fn_Calc": {"type": "SQL_SCALAR_FUNCTION", "body_hash": "bb22"},
+            "Pro_X": {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC Pro_X AS SELECT 1"},
+            "Tbl_Menu": {"type": "USER_TABLE", "definition": None},
+            "Fn_Calc": {"type": "SQL_SCALAR_FUNCTION", "definition": "CREATE FUNCTION Fn_Calc() RETURNS int AS BEGIN RETURN 1 END"},
         },
         "columns": {
             "Tbl_Menu.Id": {"type": "int", "max_length": 4, "precision": 10, "scale": 0},
@@ -48,11 +48,11 @@ def _scan_a():
     }
 
 
-def test_scan_populates_objects_hash_passthrough_and_none_for_tables():
+def test_scan_populates_objects_definition_passthrough_and_none_for_tables():
     cur = _ScriptedCursor(
-        [  # result set 1: objects (proc has hex hash, table has NULL)
-            {"name": "Pro_X", "type_desc": "SQL_STORED_PROCEDURE", "body_hash": "aa11"},
-            {"name": "Tbl_Menu", "type_desc": "USER_TABLE", "body_hash": None},
+        [  # result set 1: objects (proc has definition text, table has NULL)
+            {"name": "Pro_X", "type_desc": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC Pro_X AS SELECT 1"},
+            {"name": "Tbl_Menu", "type_desc": "USER_TABLE", "definition": None},
         ],
         [  # result set 2: columns
             {"table_name": "Tbl_Menu", "column_name": "Id",
@@ -60,71 +60,65 @@ def test_scan_populates_objects_hash_passthrough_and_none_for_tables():
         ],
     )
     snap = livescan.scan(cur)
-    assert snap["objects"]["Pro_X"] == {"type": "SQL_STORED_PROCEDURE", "body_hash": "aa11"}
-    # tables are module-less -> LEFT JOIN yields NULL -> None, never a hash
-    assert snap["objects"]["Tbl_Menu"]["body_hash"] is None
+    assert snap["objects"]["Pro_X"] == {
+        "type": "SQL_STORED_PROCEDURE",
+        "definition": "CREATE PROC Pro_X AS SELECT 1",
+    }
+    # tables are module-less -> LEFT JOIN yields NULL -> None, never definition text
+    assert snap["objects"]["Tbl_Menu"]["definition"] is None
     assert snap["objects"]["Tbl_Menu"]["type"] == "USER_TABLE"
     assert snap["columns"] == {
         "Tbl_Menu.Id": {"type": "int", "max_length": 4, "precision": 10, "scale": 0},
     }
 
 
-def test_scan_decodes_bytes_body_hash_defensively():
-    """If a driver hands varbinary back as raw bytes instead of CONVERT-ed hex
-    text, scan() normalizes to hex so comparison stays string-vs-string."""
-    cur = _ScriptedCursor(
-        [{"name": "P", "type_desc": "SQL_STORED_PROCEDURE", "body_hash": b"\xde\xad"}],
-        [],
-    )
-    snap = livescan.scan(cur)
-    assert snap["objects"]["P"]["body_hash"] == "dead"
-
-
 def test_scan_runs_queries_in_documented_order():
     """Result-set order IS the contract (fake fetchalls depend on it): first
-    execute = objects+HASHBYTES over sys.objects/sys.sql_modules, second =
+    execute = objects+definition over sys.objects/sys.sql_modules, second =
     column shapes over sys.columns joined to sys.tables (user tables only)."""
-    cur = _ScriptedCursor([{"name": "X", "type_desc": "USER_TABLE", "body_hash": None}], [])
+    cur = _ScriptedCursor([{"name": "X", "type_desc": "USER_TABLE", "definition": None}], [])
     livescan.scan(cur)
     assert len(cur.sql_calls) == 2
     first, second = cur.sql_calls
     assert "sys.objects" in first and "sys.sql_modules" in first
-    assert "HASHBYTES('SHA2_256'" in first
+    assert "m.definition AS definition" in first
+    assert "HASHBYTES" not in first
     assert "sys.columns" in second and "sys.tables" in second
 
 
 def test_quick_compare_missing_and_extra():
     a = _scan_a()
-    b = {"objects": {"Pro_X": {"type": "SQL_STORED_PROCEDURE", "body_hash": "aa11"},
-                     "Only_On_B": {"type": "USER_TABLE", "body_hash": None}},
+    b = {"objects": {"Pro_X": {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC Pro_X AS SELECT 1"},
+                     "Only_On_B": {"type": "USER_TABLE", "definition": None}},
          "columns": {}}
     r = livescan.quick_compare(a, b)
     assert r["missing_in_b"] == ["Fn_Calc", "Tbl_Menu"]  # on source only, sorted
     assert r["extra_in_b"] == ["Only_On_B"]
-    assert "Pro_X" not in r["body_changed"]  # same hash both sides -> untouched
+    assert "Pro_X" not in r["body_changed"]  # same definition both sides -> untouched
 
 
-def test_quick_compare_body_changed_flags_diff_hashes_only():
-    same = {"type": "SQL_STORED_PROCEDURE", "body_hash": "aa11"}
-    diff = {"type": "SQL_STORED_PROCEDURE", "body_hash": "ff99"}
+def test_quick_compare_body_changed_flags_diff_definitions_only():
+    same = {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC P AS SELECT 1"}
+    diff = {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC P AS SELECT 2"}
     a = {"objects": {"Keep": same, "Mod": same, "FlipA": same}, "columns": {}}
     b = {"objects": {"Keep": same, "Mod": diff, "FlipA":
-                     {"type": "SQL_SCALAR_FUNCTION", "body_hash": None}},
+                     {"type": "SQL_SCALAR_FUNCTION", "definition": None}},
          "columns": {}}
     r = livescan.quick_compare(a, b)
-    assert r["body_changed"] == ["FlipA", "Mod"]  # sorted, identical hash skipped
+    assert r["body_changed"] == ["FlipA", "Mod"]  # sorted, identical definition skipped
 
 
-def test_quick_compare_none_vs_hash_counts_as_changed():
-    """None-vs-hex is a real catalog change (object gained/lost its module) --
+def test_quick_compare_none_vs_definition_counts_as_changed():
+    """None-vs-text is a real catalog change (object gained/lost its module) --
     silently treating it as equal would hide exactly the drift triage exists
-    to catch. Type-desc-only changes do NOT flag: bodies hash the definition,
-    and presence/type buckets cover the rest."""
-    a = {"objects": {"Grew": {"type": "USER_TABLE", "body_hash": None}}, "columns": {}}
-    b = {"objects": {"Grew": {"type": "SQL_STORED_PROCEDURE", "body_hash": "ab"}}, "columns": {}}
+    to catch. Type-desc-only changes do NOT flag: bodies compare definition
+    text, and presence/type buckets cover the rest."""
+    a = {"objects": {"Grew": {"type": "USER_TABLE", "definition": None}}, "columns": {}}
+    b = {"objects": {"Grew": {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC Grew AS SELECT 1"}},
+         "columns": {}}
     assert livescan.quick_compare(a, b)["body_changed"] == ["Grew"]
-    # but type flip with SAME hash (impossible live, legal input) stays quiet:
-    b2 = {"objects": {"Grew": {"type": "VIEW", "body_hash": None}}, "columns": {}}
+    # but type flip with SAME definition (None both sides) stays quiet:
+    b2 = {"objects": {"Grew": {"type": "VIEW", "definition": None}}, "columns": {}}
     assert livescan.quick_compare(a, b2)["body_changed"] == []
 
 
@@ -149,7 +143,7 @@ def test_quick_compare_sorted_deterministic_output():
     deliberately unsorted data twice in different orders, get byte-equal,
     sorted output both times."""
     names = ["zeta", "alpha", "Mid", "beta"]
-    mk = lambda ns: {"objects": {n: {"type": "USER_TABLE", "body_hash": None} for n in ns},
+    mk = lambda ns: {"objects": {n: {"type": "USER_TABLE", "definition": None} for n in ns},
                      "columns": {}}
     r1 = livescan.quick_compare(mk(names), mk(list(reversed(names))))
     r2 = livescan.quick_compare(mk(list(reversed(names))), mk(names))
@@ -173,8 +167,8 @@ def test_quick_compare_empty_scans_summary_zeros():
 
 def test_summary_counts_consistent_with_lists():
     a = _scan_a()
-    b = {"objects": {"Pro_X": {"type": "SQL_STORED_PROCEDURE", "body_hash": "zz"},
-                     "Extra_B": {"type": "USER_TABLE", "body_hash": None}},
+    b = {"objects": {"Pro_X": {"type": "SQL_STORED_PROCEDURE", "definition": "CREATE PROC Pro_X AS SELECT 99"},
+                     "Extra_B": {"type": "USER_TABLE", "definition": None}},
          "columns": {"Tbl_Menu.Id": {"type": "int", "max_length": 8, "precision": 10, "scale": 0},
                      "Tbl_Menu.New": {"type": "bit", "max_length": 1, "precision": 1, "scale": 0}}}
     r = livescan.quick_compare(a, b)
@@ -182,7 +176,7 @@ def test_summary_counts_consistent_with_lists():
     assert s["objects_a"] == len(a["objects"]) and s["objects_b"] == len(b["objects"])
     assert s["missing_in_b"] == len(r["missing_in_b"])
     assert s["extra_in_b"] == len(r["extra_in_b"])
-    assert s["body_changed"] == len(r["body_changed"]) == 1  # Pro_X hash zz
+    assert s["body_changed"] == len(r["body_changed"]) == 1  # Pro_X definition differs
     assert s["columns_added"] == len(r["columns"]["added"])
     assert s["columns_removed"] == len(r["columns"]["removed"])
     assert s["columns_altered"] == len(r["columns"]["altered"]) == 1
