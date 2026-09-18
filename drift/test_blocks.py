@@ -91,6 +91,19 @@ class ScopeResolution(unittest.TestCase):
         self.assertEqual(len(r["excluded_blocks"]), 1)
         self.assertIn("165", r["excluded_blocks"][0]["condition"])
 
+    def test_else_body_harvested_when_client_already_has_arm(self):
+        r = resolve_scope(_proc(
+            "IF @ClientActive = 66\nBEGIN\n SELECT 'mine'\nEND\n"
+            "ELSE\nBEGIN\n SELECT 'new feature'\nEND"), 66)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertIn("mine", joined)
+        self.assertNotIn("new feature", joined)
+        harvest = r["excluded_blocks"]
+        self.assertTrue(any(
+            e.get("kind") == "else" and "new feature" in (e.get("body") or "")
+            for e in harvest), harvest)
+
     def test_chain_client_matches_middle_else_becomes_dead(self):
         body = ("IF @ClientActive = 33\nBEGIN\n SELECT 'a'\nEND\n"
                 "ELSE IF @ClientActive = 66\nBEGIN\n SELECT 'b'\nEND\n"

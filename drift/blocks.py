@@ -358,8 +358,12 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 if v == "no_match":
                     if b.get("bounded"):
                         stats["no_match"] += 1
-                        excluded.append({"line": seg["line"],
-                                         "condition": b["condition"] or "(else)"})
+                        excluded.append({
+                            "line": seg["line"],
+                            "condition": b["condition"] or "(else)",
+                            "kind": "else" if b["kind"] == "else" else "other_client",
+                            "body": b["body"] or "",
+                        })
                         continue
                     # Unbraced/unbounded: extent not proven -- keep + flag
                     # (conservative; a wrongly-kept block costs a glance,
