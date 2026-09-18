@@ -118,6 +118,17 @@
             <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
             <button id="go">Compare</button>
           </div>
+          <details class="block" id="applyTargetDetails" style="margin-top:12px;">
+            <summary>Client SQL connection (interactive apply to client only — never 105)</summary>
+            <p class="hint">Used by Apply to client after a <code>.bak</code> compare. Scratch MSSQL is typically <code>127.0.0.1</code> port <code>14330</code>.</p>
+            <div class="live-conn-grid">
+              <input id="applyTargetServer" placeholder="server" class="live-in">
+              <input id="applyTargetPort" placeholder="port (optional)" class="live-in">
+              <input id="applyTargetDb" placeholder="database" class="live-in">
+              <input id="applyTargetUser" placeholder="user" class="live-in">
+              <input id="applyTargetPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+            </div>
+          </details>
         </div>
 
         <div class="picker-panel" id="pickerPanelLive" hidden>

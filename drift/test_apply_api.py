@@ -5,6 +5,7 @@ Run: cd apps/drift-tool && python3.13 -m pytest drift/test_apply_api.py -v
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock
 

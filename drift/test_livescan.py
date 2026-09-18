@@ -226,6 +226,16 @@ def test_module_guard_no_script_generation_callables():
     )
 
 
+def test_scan_flags_oversized_module_text():
+    huge = "CREATE PROC Big AS SELECT 1 -- " + ("x" * (livescan.MODULE_TEXT_WARN_BYTES + 1))
+    cur = _ScriptedCursor(
+        [{"name": "Big", "type_desc": "SQL_STORED_PROCEDURE", "definition": huge}],
+        [],
+    )
+    snap = livescan.scan(cur)
+    assert "Big" in snap["oversized_modules"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for t in tests:

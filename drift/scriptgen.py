@@ -39,6 +39,20 @@ _COLUMNS_KEY = {"client_to_105": "client_columns", "105_to_client": "master_colu
 _SETTINGS_KEY = {"client_to_105": "client_settings", "105_to_client": "master_settings"}
 
 
+def _schema_and_bare(f: dict) -> tuple[str, str]:
+    """Schema + bare from finding name ([schema].[bare]); default schema dbo."""
+    name = (f.get("name") or "").strip()
+    parts = name.strip("[]").split("].[")
+    if len(parts) >= 2:
+        return parts[0], f.get("bare_name") or parts[-1]
+    return "dbo", f.get("bare_name") or name.strip("[]")
+
+
+def _bracketed_table(f: dict) -> str:
+    sch, bare = _schema_and_bare(f)
+    return f"[{sch}].[{bare}]"
+
+
 def assemble(findings: list, target_label: str, direction: str, include_deletions: bool = False,
              include_irrelevant: bool = False) -> dict:
     """findings: APPROVED items from one workspace's index.json (each must
@@ -123,7 +137,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
                         col = by_name.get(col_name)
                         if col:
                             statements.append(
-                                f"ALTER TABLE [dbo].[{f['bare_name']}] ADD {diffing.column_ddl(col)};"
+                                f"ALTER TABLE {_bracketed_table(f)} ADD {diffing.column_ddl(col)};"
                             )
                             included_names.append(f"{f['name']}.[{col_name}] (added column)")
                             # PLAN-V5 Lane C (C3): optional per-column backfill
@@ -148,7 +162,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
                                         })
                                     else:
                                         statements.append(
-                                            f"UPDATE [dbo].[{f['bare_name']}] SET [{col_name}] = {literal} "
+                                            f"UPDATE {_bracketed_table(f)} SET [{col_name}] = {literal} "
                                             f"WHERE [{col_name}] IS NULL;"
                                         )
                         elif col_name in (f.get("backfill") or {}):
@@ -173,7 +187,7 @@ def assemble(findings: list, target_label: str, direction: str, include_deletion
                 else:
                     inner = definition.replace("'", "''")
                     statements.append(
-                        f"IF TYPE_ID(N'[dbo].[{f['bare_name']}]') IS NULL EXEC(N'{inner}');"
+                        f"IF TYPE_ID(N'{_bracketed_table(f)}') IS NULL EXEC(N'{inner}');"
                     )
                     included_names.append(f"{f['name']} (added table type)")
         else:

@@ -13,6 +13,9 @@ except ImportError:
 _VALID_LENS = frozenset({"full", "active_read", "active_plus_else"})
 
 
+_MODULE_TEXT_WARN_BYTES = 2_097_152
+
+
 def compare_procs(
     left_def: str,
     right_def: str,
@@ -20,11 +23,15 @@ def compare_procs(
     lens: str,
     *,
     client_settings: dict | None = None,
+    master_settings: dict | None = None,
+    direction: str = "client_to_105",
 ) -> dict:
     """left_def = master (105) capture; right_def = client capture.
 
-    Preview/diff honor ``lens``. Copy SQL is always CREATE OR ALTER of the
-    original client definition (never DDL aimed at database 105).
+    Preview/diff honor ``lens``. Copy SQL is CREATE OR ALTER of the **wanted**
+    side for the workspace direction, always to paste onto the **client**:
+    ``client_to_105`` copies ``right_def`` (client); ``105_to_client`` copies
+    ``left_def`` (master onto client). Never a 105 write target.
     """
     if lens not in _VALID_LENS:
         return {
@@ -85,15 +92,30 @@ def compare_procs(
         )
     )
 
+    copy_from_master = direction == "105_to_client"
+    source_def = left_def if copy_from_master else right_def
+    source_settings = master_settings if copy_from_master else client_settings
+    source_harvest = left_harvest if copy_from_master else right_harvest
+
     copy_sql = ""
     copy_kind = "none"
-    if not identical and (right_def or "").strip():
-        copy_sql = _as_create_or_alter(right_def, client_settings)
+    if not identical and (source_def or "").strip():
+        copy_sql = _as_create_or_alter(source_def, source_settings)
         if lens == "active_plus_else":
-            harvest_block = _harvest_comment_block(left_harvest)
+            harvest_block = _harvest_comment_block(source_harvest)
             if harvest_block:
                 copy_sql = copy_sql.rstrip() + "\n\n" + harvest_block
         copy_kind = "create_or_alter"
+
+    oversized = [
+        side
+        for side, text in (("left", left_def), ("right", right_def))
+        if len(text or "") > _MODULE_TEXT_WARN_BYTES
+    ]
+    if oversized:
+        warning = (warning + " " if warning else "") + (
+            f"module definition exceeds 2MB on: {', '.join(oversized)}"
+        )
 
     return {
         "ok": True,
@@ -104,6 +126,7 @@ def compare_procs(
         "diff_unified": diff_unified,
         "copy_sql": copy_sql,
         "copy_kind": copy_kind,
+        "copy_side": "master" if copy_from_master else "client",
         "warning": warning,
     }
 

@@ -16,14 +16,14 @@ Ship an Olives BO update from 105 to a client without breaking their customizati
 
 Live scan never drives Drift lenses or SQL Compare apply; run a `.bak` compare first for procedure drift.
 
-**Interactive apply (Task 10 — session layer vs HTTP):** `drift/apply_session.py` implements skip / stop / bind-by-msgno (`ApplySession` + `Decision`). **Intended** Compare-tab wiring (not in `app.py` until Task 10 merges):
+**Interactive apply:** Rehearse first (`POST .../rehearse`). Then **Apply to client (interactive)** on **105 → Client** calls:
 
 ```text
-POST /api/run/<run_id>/<direction>/apply_start   → { session_id, waiting: null | prompt }
-POST /api/apply_session/<session_id>/decide      → JSON { action, msgno } → next prompt or { done: true, report }
+POST /api/run/<run_id>/105_to_client/apply_start   → { session_id, waiting, done, report }
+POST /api/apply_session/<session_id>/decide      → { action, msgno }  (skip | stop | bind_skip | bind_stop)
 ```
 
-Rehearse first, then `apply_start`. Every SQL failure should pause for a decision; **no** DDL against **105** via `apply_start` (client connection only). Until those routes exist, `POST .../apply` and rehearsal still use `executor.run_script` (including auto-continue on historically “benign” msgnos).
+`apply_start` is **403** for `client_to_105`. Optional `client.port` reaches scratch MSSQL (`14330`). `X-Batch: 1` stops on the first SQL error. Rehearsal still uses `executor.run_script` (continues past historically “benign” msgnos).
 
 **D6:** added-column `ALTER TABLE` / backfill `UPDATE` / UDTT `TYPE_ID` use `[schema].[name]` from the finding, not a hard-coded `[dbo]`.
 

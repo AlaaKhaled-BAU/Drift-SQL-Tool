@@ -1226,6 +1226,17 @@ async function assembleApply(direction) {
 }
 
 function liveClientConnPayload() {
+  const applyServer = document.getElementById("applyTargetServer")?.value?.trim();
+  if (applyServer) {
+    const portRaw = document.getElementById("applyTargetPort")?.value?.trim();
+    return {
+      server: applyServer,
+      port: portRaw ? Number(portRaw) : undefined,
+      database: document.getElementById("applyTargetDb")?.value?.trim() || "",
+      user: document.getElementById("applyTargetUser")?.value?.trim() || "",
+      password: document.getElementById("applyTargetPass")?.value || "",
+    };
+  }
   return {
     server: document.getElementById("liveClientServer")?.value?.trim() || "",
     database: document.getElementById("liveClientDb")?.value?.trim() || "",
@@ -1274,7 +1285,7 @@ async function startInteractiveApply(direction) {
   if (IS_LIVE_SCAN || !CURRENT_RUN_ID || direction !== "105_to_client") return;
   const client = liveClientConnPayload();
   if (!client.server || !client.database) {
-    alert("Enter the client SQL Server connection in the Compare tab under Live servers (server + database at minimum).");
+    alert("Enter the client SQL Server (server + database) under “Client SQL connection” or Live servers.");
     return;
   }
   if (!confirm("Apply the assembled script to the live CLIENT database? 105 is never modified. Errors will pause for your decision.")) return;

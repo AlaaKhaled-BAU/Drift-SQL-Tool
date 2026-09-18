@@ -1,5 +1,9 @@
 """ponytail: minimal self-check for the data-loss guard. Run: python3.13 test_scriptgen.py"""
-import scriptgen
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scriptgen  # noqa: E402
 
 # direction is required (D2) -- these existing tests all exercise
 # client_to_105 (client_def is the wanted side), preserving their original
@@ -42,6 +46,16 @@ def test_added_column_is_safe_to_auto_add():
                  "client_columns": [col]}]
     r = scriptgen.assemble(findings, "105", C2_105)
     assert "ALTER TABLE [dbo].[T] ADD [NewCol] int NULL" in r["script"], r["script"]
+
+
+def test_added_column_uses_schema_from_finding_name():
+    col = {"name": "NewCol", "type": "int", "max_length": 4, "precision": 10, "scale": 0, "nullable": True, "is_pk": False}
+    findings = [{"name": "[sales].[T]", "bare_name": "T", "type": "SqlTable", "role": "modified",
+                 "columns": {"added": ["NewCol"], "removed": [], "retyped": []},
+                 "client_columns": [col]}]
+    r = scriptgen.assemble(findings, "105", C2_105)
+    assert "ALTER TABLE [sales].[T] ADD [NewCol] int NULL" in r["script"], r["script"]
+    assert "ALTER TABLE [dbo].[T]" not in r["script"]
 
 def test_added_table_without_bundle_stays_manual():
     findings = [{"name": "[dbo].[NewTable]", "bare_name": "NewTable", "type": "SqlTable", "role": "added"}]

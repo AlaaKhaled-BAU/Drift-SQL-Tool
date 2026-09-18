@@ -28,6 +28,7 @@ import pymssql
 # UI/CLI can assert "triage mode" and so the test battery can pin the module's
 # refusal to grow generation entry points.
 SCAN_ONLY = True
+MODULE_TEXT_WARN_BYTES = 2_097_152
 
 
 def _objects_sql() -> str:
@@ -86,11 +87,15 @@ def scan(cur) -> dict:
     # --- result set 1: objects + module definitions ---
     cur.execute(_objects_sql())
     objects = {}
+    oversized = []
     for row in cur.fetchall():
+        definition = row["definition"]
         objects[row["name"]] = {
             "type": row["type_desc"],
-            "definition": row["definition"],
+            "definition": definition,
         }
+        if isinstance(definition, str) and len(definition) > MODULE_TEXT_WARN_BYTES:
+            oversized.append(row["name"])
 
     # --- result set 2: column shapes of user tables ---
     cur.execute(_columns_sql())
@@ -104,7 +109,7 @@ def scan(cur) -> dict:
             "scale": row["scale"],
         }
 
-    return {"objects": objects, "columns": columns}
+    return {"objects": objects, "columns": columns, "oversized_modules": oversized}
 
 
 def quick_compare(a: dict, b: dict) -> dict:

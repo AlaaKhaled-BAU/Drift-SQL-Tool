@@ -10,6 +10,8 @@ import time
 import uuid
 from pathlib import Path
 
+import pymssql
+
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
@@ -287,6 +289,27 @@ def _conn_params(side: dict, label: str) -> tuple[str, str, str, str] | None:
     if not server or not database:
         return None
     return server, database, user, password
+
+
+def _sql_connect(side: dict):
+    """Client/live connect. Optional port is for scratch MSSQL (HOST_PORT);
+    omitted so production hosts keep default 1433 (livescan contract)."""
+    params = _conn_params(side, "client")
+    if not params:
+        return None
+    server, database, user, password = params
+    port = side.get("port")
+    if port in (None, "", 0, "0"):
+        return livescan.connect(server, database, user or None, password or None)
+    return pymssql.connect(
+        server=server,
+        port=int(port),
+        database=database,
+        user=user or None,
+        password=password or None,
+        timeout=60,
+        login_timeout=10,
+    )
 
 
 @app.post("/api/livescan")
@@ -898,9 +921,9 @@ def api_apply_start(run_id, direction):
         return jsonify({"error": "unknown run or direction"}), 404
 
     body = request.get_json(force=True, silent=True) or {}
-    client = _conn_params(body.get("client") or {}, "client")
-    if not client:
-        return jsonify({"error": "client needs server, database, user, and password"}), 400
+    client_side = body.get("client") or {}
+    if not _conn_params(client_side, "client"):
+        return jsonify({"error": "client needs server and database"}), 400
 
     script_path = run["run_dir"] / direction / "apply" / "add_update_on_client.sql"
     if not script_path.is_file():
@@ -908,9 +931,11 @@ def api_apply_start(run_id, direction):
 
     batches = [b.strip() for b in script_path.read_text(encoding="utf-8").split("\nGO") if b.strip()]
     try:
-        conn = livescan.connect(*client)
+        conn = _sql_connect(client_side)
     except Exception as e:  # noqa: BLE001 — connection failure to caller
         return jsonify({"error": str(e)}), 400
+    if conn is None:
+        return jsonify({"error": "client needs server and database"}), 400
 
     session = ApplySession(batches)
     session_id = uuid.uuid4().hex
