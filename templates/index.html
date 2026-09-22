@@ -29,9 +29,15 @@
 
   <main class="main-content">
     <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
-      <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab active" data-tool="trimmer" aria-selected="true">Trimmer</button>
-      <button type="button" role="tab" id="toolTabCompare" class="tool-tab" data-tool="compare" aria-selected="false">SQL Compare</button>
-      <button type="button" role="tab" id="toolTabDrift" class="tool-tab" data-tool="drift" aria-selected="false">Drift tool</button>
+      <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab tab-tip active" data-tool="trimmer" aria-selected="true"
+        title="Paste one procedure and a ClientActive ID to see what that client actually runs; leftover branches are listed as harvest (reading only)."
+        aria-describedby="tipToolTrimmer">Trimmer<span id="tipToolTrimmer" class="tab-tip-text">Paste one procedure and a ClientActive ID to see what that client actually runs; leftover branches are listed as harvest (reading only).</span></button>
+      <button type="button" role="tab" id="toolTabCompare" class="tool-tab tab-tip" data-tool="compare" aria-selected="false"
+        title="Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift."
+        aria-describedby="tipToolCompare">SQL Compare<span id="tipToolCompare" class="tab-tip-text">Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift.</span></button>
+      <button type="button" role="tab" id="toolTabDrift" class="tool-tab tab-tip" data-tool="drift" aria-selected="false"
+        title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
+        aria-describedby="tipToolDrift">Drift tool<span id="tipToolDrift" class="tab-tip-text">Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only.</span></button>
     </nav>
 
     <div id="paneTrimmer" class="tool-pane" data-tool="trimmer">
@@ -50,135 +56,186 @@
 
     <div id="paneCompare" class="tool-pane" data-tool="compare" hidden>
       <h1>SQL Compare</h1>
-      <div class="sub">Schema drift (tables, columns, constraints) from <code>.bak</code> restores, or a live <strong>scan-only</strong> triage preview. Procedure-body lenses live on the Drift tool tab (same <code>run_id</code>).</div>
+      <div class="sub">Schema drift from <code>.bak</code> restores, live catalog scan, config-row copy, web files, and client script packages. Procedure-body lenses live on the Drift tool tab (same <code>run_id</code>).</div>
 
-      <div class="compare-source-mode block">
-        <span class="type-filter-label">Source</span>
-        <label><input type="radio" name="compareSource" id="compareSourceLocal" value="local" checked> Local <code>.bak</code> (full pipeline)</label>
-        <label><input type="radio" name="compareSource" id="compareSourceLive" value="live"> Live servers (scan only — no apply)</label>
+      <nav class="compare-subtabs tool-tabs" id="compareSubTabs" role="tablist" aria-label="SQL Compare views">
+        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip active" data-compare-sub="schema" aria-selected="true" aria-label="Schema"
+          title="Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.">Schema<span class="tab-tip-text" aria-hidden="true">Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.</span></button>
+        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="livescan" aria-selected="false" aria-label="Live scan"
+          title="Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only — no apply.">Live scan<span class="tab-tip-text" aria-hidden="true">Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only — no apply.</span></button>
+        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="datacopy" aria-selected="false" aria-label="Data copy"
+          title="Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.">Data copy<span class="tab-tip-text" aria-hidden="true">Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.</span></button>
+        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="webpages" aria-selected="false" aria-label="Web pages"
+          title="Diff Olives web files by content hash; download a robocopy script or copy to a staging folder. Deletes stay off unless you opt in.">Web pages<span class="tab-tip-text" aria-hidden="true">Diff Olives web files by content hash; download a robocopy script or copy to a staging folder. Deletes stay off unless you opt in.</span></button>
+        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="package" aria-selected="false" aria-label="Package"
+          title="Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.">Package<span class="tab-tip-text" aria-hidden="true">Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.</span></button>
+      </nav>
+
+      <div id="sharedLiveConn" class="block" hidden>
+        <p class="hint">Shared live SQL connection (master = source, client = destination). Data copy always writes to <strong>client</strong> only.</p>
+        <div class="live-conn-grid">
+          <fieldset><legend>Master (105) — source</legend>
+            <input id="liveMasterServer" placeholder="server" class="live-in">
+            <input id="liveMasterDb" placeholder="database" class="live-in">
+            <input id="liveMasterUser" placeholder="user" class="live-in">
+            <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+          </fieldset>
+          <fieldset><legend>Client — destination</legend>
+            <input id="liveClientServer" placeholder="server" class="live-in">
+            <input id="liveClientDb" placeholder="database" class="live-in">
+            <input id="liveClientUser" placeholder="user" class="live-in">
+            <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+          </fieldset>
+        </div>
       </div>
-      <div id="liveScanBanner" class="run-warning" hidden>Live scan is <strong>SCAN_ONLY</strong>: triage preview only. Apply is disabled. Run a <code>.bak</code> compare for apply scripts and use Drift tool for procedure lenses.</div>
 
-      <section class="block" id="pickerSection">
-        <div class="picker-panel" id="pickerPanelLocal">
-          <div class="picker-grid">
-            <div class="picker-slot" id="slot_master" data-role="master">
-              <div class="picker-slot-label">Master image (105)</div>
-              <div class="picker-tabs">
-                <div class="picker-tab active" data-mode="recent">Recent</div>
-                <div class="picker-tab" data-mode="browse">Browse device</div>
+      <div id="compareSubSchema" class="compare-subpane" data-compare-sub="schema">
+        <section class="block" id="pickerSection">
+          <div class="picker-panel" id="pickerPanelLocal">
+            <div class="picker-grid">
+              <div class="picker-slot" id="slot_master" data-role="master">
+                <div class="picker-slot-label">Master image (105)</div>
+                <div class="picker-tabs">
+                  <div class="picker-tab active" data-mode="recent">Recent</div>
+                  <div class="picker-tab" data-mode="browse">Browse device</div>
+                </div>
+                <div class="picker-recent">
+                  <select id="recent_master">
+                    <option value="">Select a recent backup…</option>
+                    {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div class="picker-browse" style="display:none;">
+                  <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+                </div>
+                <div class="selected-chip" style="display:none;"></div>
               </div>
-              <div class="picker-recent">
-                <select id="recent_master">
-                  <option value="">Select a recent backup…</option>
-                  {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
-                </select>
+
+              <div class="picker-slot" id="slot_client" data-role="client">
+                <div class="picker-slot-label">Client backup</div>
+                <div class="picker-tabs">
+                  <div class="picker-tab active" data-mode="recent">Recent</div>
+                  <div class="picker-tab" data-mode="browse">Browse device</div>
+                </div>
+                <div class="picker-recent">
+                  <select id="recent_client">
+                    <option value="">Select a recent backup…</option>
+                    {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
+                  </select>
+                </div>
+                <div class="picker-browse" style="display:none;">
+                  <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+                </div>
+                <div class="selected-chip" style="display:none;"></div>
               </div>
-              <div class="picker-browse" style="display:none;">
-                <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
-              </div>
-              <div class="selected-chip" style="display:none;"></div>
             </div>
 
-            <div class="picker-slot" id="slot_client" data-role="client">
-              <div class="picker-slot-label">Client backup</div>
-              <div class="picker-tabs">
-                <div class="picker-tab active" data-mode="recent">Recent</div>
-                <div class="picker-tab" data-mode="browse">Browse device</div>
-              </div>
-              <div class="picker-recent">
-                <select id="recent_client">
-                  <option value="">Select a recent backup…</option>
-                  {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
-                </select>
-              </div>
-              <div class="picker-browse" style="display:none;">
-                <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
-              </div>
-              <div class="selected-chip" style="display:none;"></div>
+            <div class="directions">
+              <label><input type="checkbox" id="dirC105" checked> Client → 105 <span class="hint">(reflect client's changes onto 105)</span></label>
+              <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
             </div>
-          </div>
 
-          <div class="directions">
-            <label><input type="checkbox" id="dirC105" checked> Client → 105 <span class="hint">(reflect client's changes onto 105)</span></label>
-            <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
-          </div>
-
-          <div class="type-filter">
-            <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
-            <div class="type-filter-options">
-              {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
-              {% for cat in type_categories %}
-              <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
-              {% endfor %}
+            <div class="type-filter">
+              <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
+              <div class="type-filter-options">
+                {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
+                {% for cat in type_categories %}
+                <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
+                {% endfor %}
+              </div>
+              <button type="button" class="ghost sm filter-chip" id="pkFkChip" title="Show only primary/foreign key constraints">PK/FK only</button>
             </div>
-          </div>
 
+            <div class="run-actions">
+              <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
+              <button id="go">Compare</button>
+            </div>
+            <details class="block" id="applyTargetDetails" style="margin-top:12px;">
+              <summary>Client SQL connection (interactive apply to client only — never 105)</summary>
+              <p class="hint">Used by Apply to client after a <code>.bak</code> compare. Scratch MSSQL is typically <code>127.0.0.1</code> port <code>14330</code>.</p>
+              <div class="live-conn-grid">
+                <input id="applyTargetServer" placeholder="server" class="live-in">
+                <input id="applyTargetPort" placeholder="port (optional)" class="live-in">
+                <input id="applyTargetDb" placeholder="database" class="live-in">
+                <input id="applyTargetUser" placeholder="user" class="live-in">
+                <input id="applyTargetPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="block" id="logSection" style="display:none;">
+          <div class="block-head"><h2>Run log</h2> <span class="hint">live progress while restore/compare runs — closes automatically on success or failure</span></div>
+          <div id="log"></div>
+        </section>
+
+        <details class="legend block" id="compareLegend">
+          <summary>What do these mean? — legend</summary>
+          <div class="legend-grid">
+            <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Client → 105</b> this means the client added it.</div></div>
+            <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs — a body/parameter/column change.</div></div>
+            <div class="lg-item"><span class="tag only_on_other">only on other side</span><div>Informational: the other side has this, this direction's source doesn't. Never auto-deleted.</div></div>
+            <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't — no behavior change.</div></div>
+            <div class="lg-item"><span class="prio high"></span><div><b>High priority</b> — &gt;5 known callers, or a column was removed/retyped. Review first.</div></div>
+            <div class="lg-item"><span class="prio medium"></span><div><b>Medium priority</b> — other real structural drift.</div></div>
+            <div class="lg-item"><span class="prio low"></span><div><b>Low priority</b> — formatting-only or documentation-only.</div></div>
+            <div class="lg-item"><span class="ai-badge">AI suggestion</span><div>Advisory only, from an LLM reading the diff shown next to it. Never decides, never auto-approves — verify before acting.</div></div>
+          </div>
+        </details>
+
+        <div id="results" style="display:none;">
+          <div id="runWarnings"></div>
+          <div class="tabs" id="tabs"></div>
+          <div id="workspaces"></div>
+          <div class="downloads" id="downloads"></div>
+        </div>
+      </div>
+
+      <div id="compareSubLivescan" class="compare-subpane" data-compare-sub="livescan" hidden>
+        <div id="liveScanBanner" class="run-warning">Live scan is <strong>SCAN_ONLY</strong>: triage preview only. Apply is disabled. Run a <code>.bak</code> compare on Schema for apply scripts.</div>
+        <div class="run-actions">
+          <button type="button" id="liveScanBtn">Run live scan</button>
+        </div>
+        <div id="liveResults" class="block" style="display:none;"></div>
+      </div>
+
+      <div id="compareSubDatacopy" class="compare-subpane" data-compare-sub="datacopy" hidden>
+        <section class="block">
+          <p class="hint">Copy config rows (menu, programs, messages, pages) from master to <strong>client only</strong>. Preview counts before apply.</p>
+          <button type="button" id="datacopyLoadTables">Load config tables</button>
+          <div id="datacopyTableList" class="datacopy-tables"></div>
           <div class="run-actions">
-            <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
-            <button id="go">Compare</button>
+            <button type="button" id="datacopyPreview">Preview diff counts</button>
+            <button type="button" id="datacopySaveScript">Save merge script</button>
+            <button type="button" id="datacopyApply">Apply to client</button>
           </div>
-          <details class="block" id="applyTargetDetails" style="margin-top:12px;">
-            <summary>Client SQL connection (interactive apply to client only — never 105)</summary>
-            <p class="hint">Used by Apply to client after a <code>.bak</code> compare. Scratch MSSQL is typically <code>127.0.0.1</code> port <code>14330</code>.</p>
-            <div class="live-conn-grid">
-              <input id="applyTargetServer" placeholder="server" class="live-in">
-              <input id="applyTargetPort" placeholder="port (optional)" class="live-in">
-              <input id="applyTargetDb" placeholder="database" class="live-in">
-              <input id="applyTargetUser" placeholder="user" class="live-in">
-              <input id="applyTargetPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-            </div>
-          </details>
-        </div>
+          <pre id="datacopyOut" class="trim-out"></pre>
+        </section>
+      </div>
 
-        <div class="picker-panel" id="pickerPanelLive" hidden>
-          <p class="hint">Connect to two live SQL Server databases (module definitions + column shape). No scripts are generated.</p>
-          <div class="live-conn-grid">
-            <fieldset><legend>Master (105)</legend>
-              <input id="liveMasterServer" placeholder="server" class="live-in">
-              <input id="liveMasterDb" placeholder="database" class="live-in">
-              <input id="liveMasterUser" placeholder="user" class="live-in">
-              <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-            </fieldset>
-            <fieldset><legend>Client</legend>
-              <input id="liveClientServer" placeholder="server" class="live-in">
-              <input id="liveClientDb" placeholder="database" class="live-in">
-              <input id="liveClientUser" placeholder="user" class="live-in">
-              <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-            </fieldset>
-          </div>
+      <div id="compareSubWebpages" class="compare-subpane" data-compare-sub="webpages" hidden>
+        <section class="block">
+          <p class="hint">Paths must sit under the server browse root. Production IIS copy uses the generated robocopy script.</p>
+          <label>Source (update package) <input id="webSrcRoot" class="live-in" placeholder="absolute path under browse root"></label>
+          <label>Destination (deployed / staging) <input id="webDstRoot" class="live-in" placeholder="absolute path under browse root"></label>
           <div class="run-actions">
-            <button type="button" id="liveScanBtn">Run live scan</button>
+            <button type="button" id="webPreviewBtn">Preview manifest</button>
+            <button type="button" id="webScriptBtn">Save robocopy script</button>
+            <button type="button" id="webApplyBtn">Apply to staging folder</button>
           </div>
-        </div>
-      </section>
+          <pre id="webOut" class="trim-out"></pre>
+        </section>
+      </div>
 
-      <section class="block" id="logSection" style="display:none;">
-        <div class="block-head"><h2>Run log</h2> <span class="hint">live progress while restore/compare runs — closes automatically on success or failure</span></div>
-        <div id="log"></div>
-      </section>
-
-      <div id="liveResults" class="block" style="display:none;"></div>
-
-      <details class="legend block" id="compareLegend">
-        <summary>What do these mean? — legend</summary>
-        <div class="legend-grid">
-          <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Client → 105</b> this means the client added it.</div></div>
-          <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs — a body/parameter/column change.</div></div>
-          <div class="lg-item"><span class="tag only_on_other">only on other side</span><div>Informational: the other side has this, this direction's source doesn't. Never auto-deleted.</div></div>
-          <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't — no behavior change.</div></div>
-          <div class="lg-item"><span class="prio high"></span><div><b>High priority</b> — &gt;5 known callers, or a column was removed/retyped. Review first.</div></div>
-          <div class="lg-item"><span class="prio medium"></span><div><b>Medium priority</b> — other real structural drift.</div></div>
-          <div class="lg-item"><span class="prio low"></span><div><b>Low priority</b> — formatting-only or documentation-only.</div></div>
-          <div class="lg-item"><span class="ai-badge">AI suggestion</span><div>Advisory only, from an LLM reading the diff shown next to it. Never decides, never auto-approves — verify before acting.</div></div>
-        </div>
-      </details>
-
-      <div id="results" style="display:none;">
-        <div id="runWarnings"></div>
-        <div class="tabs" id="tabs"></div>
-        <div id="workspaces"></div>
-        <div class="downloads" id="downloads"></div>
+      <div id="compareSubPackage" class="compare-subpane" data-compare-sub="package" hidden>
+        <section class="block">
+          <p class="hint">Profiles store paths and live hostnames — never passwords.</p>
+          <label>Profile name <input id="pkgProfileName" class="live-in"></label>
+          <button type="button" id="pkgSaveProfile">Save profile</button>
+          <button type="button" class="ghost sm" id="pkgDeleteProfile">Delete profile</button>
+          <button type="button" id="pkgDownloadZip">Download client package (.zip)</button>
+          <pre id="pkgOut" class="trim-out"></pre>
+        </section>
       </div>
     </div>
 

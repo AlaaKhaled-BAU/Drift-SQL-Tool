@@ -3,20 +3,22 @@
 See drift-tool/PLAN.md (v2) and drift-tool/PLAN-V3-usability-git-ai.md (usability,
 change explorer, AI triage) for the design this implements.
 """
+import io
 import json
 import queue
 import threading
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 import pymssql
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from drift import (ai, ai_merge, blocks, classify, compare, config, diff_render, diffing,
+from drift import (ai, ai_merge, blocks, classify, compare, config, datacopy, diff_render, diffing,
                    executor, gatewrap, ledger, livescan, metrics, pipeline, profiles, proc_lens,
-                   scriptgen, statements)
+                   scriptgen, statements, webdeploy)
 from drift.apply_session import ApplySession, Decision
 from drift.trimmer import handle_trim
 
@@ -312,6 +314,52 @@ def _sql_connect(side: dict):
     )
 
 
+_BACKFILL_RERUN_MSG = (
+    "this run was reloaded from a prior session and no longer has the full "
+    "in-memory record apply-script assembly needs -- re-run the comparison "
+    "to enable Apply for this run."
+)
+
+
+def _datacopy_dst_guard(body) -> tuple[dict | None, tuple]:
+    """Refuse any datacopy call that does not explicitly target the client role."""
+    if body.get("dst_role") != "client":
+        return None, (jsonify({"error": "datacopy requires dst_role: \"client\" (never master/105)"}), 403)
+    return body, ()
+
+
+def _webdeploy_roots(body) -> tuple[Path, Path] | tuple[None, tuple]:
+    src_raw, dst_raw = body.get("src_root"), body.get("dst_root")
+    if not src_raw or not dst_raw:
+        return None, (jsonify({"error": "src_root and dst_root required"}), 400)
+    root = config.BACKUP_BROWSE_ROOT.resolve()
+    src = Path(src_raw).resolve()
+    dst = Path(dst_raw).resolve()
+    for label, p in (("src_root", src), ("dst_root", dst)):
+        if p != root and root not in p.parents:
+            return None, (jsonify({"error": f"{label} outside the configured browse root"}), 400)
+    return (src, dst), ()
+
+
+def _datacopy_table_plan(src_conn, dst_conn, table: str, include_delete: bool) -> dict:
+    src_cur = src_conn.cursor(as_dict=True)
+    dst_cur = dst_conn.cursor(as_dict=True)
+    keys = datacopy.get_key_columns(src_cur, table)
+    src_rows = datacopy.fetch_rows_hashed(src_cur, table, keys)
+    dst_rows = datacopy.fetch_rows_hashed(dst_cur, table, keys)
+    plan = datacopy.diff_tables(src_rows, dst_rows)
+    if not include_delete:
+        plan = {**plan, "delete": []}
+    if src_rows:
+        cols = next(iter(src_rows.values()))["cols"]
+    elif dst_rows:
+        cols = next(iter(dst_rows.values()))["cols"]
+    else:
+        cols = []
+    return {"table": table, "key_cols": keys, "cols": cols, "plan": plan,
+            "counts": {k: len(plan[k]) for k in ("insert", "update", "delete")}}
+
+
 @app.post("/api/livescan")
 def api_livescan():
     """Live catalog quick-scan (SCAN_ONLY — no script generation)."""
@@ -450,6 +498,8 @@ def api_save_profile():
         master_path=body.get("master_path") or "",
         client_path=body.get("client_path") or "",
         client_active_id=body.get("client_active_id"),
+        master_live=body.get("master_live"),
+        client_live=body.get("client_live"),
     )
     return jsonify(saved)
 
@@ -555,6 +605,8 @@ def api_run_file(run_id):
     if run["run_dir"].resolve() not in target.parents and target != run["run_dir"].resolve():
         return jsonify({"error": "path outside run directory"}), 400
     if not target.is_file():
+        if request.args.get("optional") == "1":
+            return Response(status=204)
         return jsonify({"error": "not found"}), 404
     return Response(target.read_text(encoding="utf-8", errors="replace"), mimetype="text/plain")
 
@@ -642,15 +694,49 @@ def api_review(run_id, direction):
     return jsonify({"ok": True})
 
 
+@app.post("/api/run/<run_id>/<direction>/backfill")
+def api_backfill(run_id, direction):
+    run = _load_run(run_id)
+    if not run or direction not in run.get("workspaces", {}):
+        return jsonify({"error": "unknown run or direction"}), 404
+    if direction not in run.get("findings", {}):
+        return jsonify({"error": _BACKFILL_RERUN_MSG}), 400
+    body = request.get_json(force=True)
+    finding_id = body.get("finding_id")
+    backfill = body.get("backfill")
+    if not finding_id or not isinstance(backfill, dict):
+        return jsonify({"error": "finding_id and backfill object required"}), 400
+    idx = run["workspaces"][direction]
+    row = next((f for f in idx["findings"] if f["id"] == finding_id), None)
+    if row is None:
+        return jsonify({"error": "unknown finding_id"}), 404
+    full_list = run["findings"][direction]
+    pos = idx["findings"].index(row)
+    if pos >= len(full_list):
+        return jsonify({"error": "unknown finding_id"}), 404
+    target = full_list[pos]
+    target["backfill"] = {str(k): str(v) for k, v in backfill.items()}
+    apply_dir = run["run_dir"] / direction / "apply"
+    apply_dir.mkdir(exist_ok=True)
+    sidecar = apply_dir / "backfill.json"
+    existing = {}
+    if sidecar.is_file():
+        try:
+            existing = json.loads(sidecar.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = {}
+    existing[finding_id] = target["backfill"]
+    sidecar.write_text(json.dumps(existing, indent=1), encoding="utf-8")
+    return jsonify({"ok": True, "backfill": target["backfill"]})
+
+
 @app.post("/api/run/<run_id>/<direction>/apply")
 def api_apply(run_id, direction):
     run = _load_run(run_id)
     if not run or direction not in run["workspaces"]:
         return jsonify({"error": "unknown run or direction"}), 404
     if direction not in run.get("findings", {}):
-        return jsonify({"error": "this run was reloaded from a prior session and no longer has the full "
-                                  "in-memory record apply-script assembly needs -- re-run the comparison "
-                                  "to enable Apply for this run."}), 400
+        return jsonify({"error": _BACKFILL_RERUN_MSG}), 400
     include_deletions = (request.get_json(force=True, silent=True) or {}).get("include_deletions", False)
 
     index = run["workspaces"][direction]
@@ -1222,6 +1308,201 @@ def api_ai_batch(run_id, direction):
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"job_id": job_id})
+
+
+@app.post("/api/datacopy/tables")
+def api_datacopy_tables():
+    body = request.get_json(force=True)
+    _, err = _datacopy_dst_guard(body)
+    if err:
+        return err
+    src_conn = _sql_connect(body.get("source") or {})
+    if src_conn is None:
+        return jsonify({"error": "source needs server + database"}), 400
+    try:
+        cur = src_conn.cursor(as_dict=True)
+        tables = datacopy.list_config_tables(cur)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+    finally:
+        src_conn.close()
+    return jsonify({"tables": tables})
+
+
+@app.post("/api/datacopy/preview")
+def api_datacopy_preview():
+    body = request.get_json(force=True)
+    _, err = _datacopy_dst_guard(body)
+    if err:
+        return err
+    tables = body.get("tables") or []
+    if not tables:
+        return jsonify({"error": "tables list required"}), 400
+    include_delete = bool(body.get("include_delete", False))
+    src_conn = _sql_connect(body.get("source") or {})
+    dst_conn = _sql_connect(body.get("destination") or body.get("client") or {})
+    if src_conn is None or dst_conn is None:
+        return jsonify({"error": "source and destination each need server + database"}), 400
+    results = []
+    try:
+        for table in tables:
+            results.append(_datacopy_table_plan(src_conn, dst_conn, table, include_delete))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+    finally:
+        src_conn.close()
+        dst_conn.close()
+    return jsonify({"tables": results})
+
+
+@app.post("/api/datacopy/script")
+def api_datacopy_script():
+    body = request.get_json(force=True)
+    _, err = _datacopy_dst_guard(body)
+    if err:
+        return err
+    tables = body.get("tables") or []
+    if not tables:
+        return jsonify({"error": "tables list required"}), 400
+    include_delete = bool(body.get("include_delete", False))
+    src_conn = _sql_connect(body.get("source") or {})
+    dst_conn = _sql_connect(body.get("destination") or body.get("client") or {})
+    if src_conn is None or dst_conn is None:
+        return jsonify({"error": "source and destination each need server + database"}), 400
+    parts = []
+    try:
+        for table in tables:
+            info = _datacopy_table_plan(src_conn, dst_conn, table, include_delete)
+            parts.append(datacopy.emit_merge_script(
+                info["table"], info["cols"], info["key_cols"], info["plan"]))
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+    finally:
+        src_conn.close()
+        dst_conn.close()
+    script = "\n".join(parts)
+    run_id = body.get("run_id")
+    direction = body.get("direction") or "105_to_client"
+    if run_id:
+        run = _load_run(run_id)
+        if run:
+            pkg = run["run_dir"] / "package"
+            pkg.mkdir(exist_ok=True)
+            (pkg / "datacopy.sql").write_text(script, encoding="utf-8")
+    return jsonify({"script": script})
+
+
+@app.post("/api/datacopy/apply")
+def api_datacopy_apply():
+    body = request.get_json(force=True)
+    _, err = _datacopy_dst_guard(body)
+    if err:
+        return err
+    tables = body.get("tables") or []
+    if not tables:
+        return jsonify({"error": "tables list required"}), 400
+    include_delete = bool(body.get("include_delete", False))
+    src_conn = _sql_connect(body.get("source") or {})
+    dst_conn = _sql_connect(body.get("destination") or body.get("client") or {})
+    if src_conn is None or dst_conn is None:
+        return jsonify({"error": "source and destination each need server + database"}), 400
+    inserted = updated = deleted = 0
+    errors = []
+    try:
+        for table in tables:
+            info = _datacopy_table_plan(src_conn, dst_conn, table, include_delete)
+            dst_cur = dst_conn.cursor(as_dict=True)
+            res = datacopy.apply_plan(
+                dst_cur, info["table"], info["key_cols"], info["plan"],
+                identity_cols=body.get("identity_cols"),
+            )
+            dst_conn.commit()
+            inserted += res.get("inserted", 0)
+            updated += res.get("updated", 0)
+            deleted += res.get("deleted", 0)
+            errors.extend(res.get("errors") or [])
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e), "errors": errors}), 400
+    finally:
+        src_conn.close()
+        dst_conn.close()
+    return jsonify({"inserted": inserted, "updated": updated, "deleted": deleted, "errors": errors})
+
+
+@app.post("/api/webdeploy/preview")
+def api_webdeploy_preview():
+    body = request.get_json(force=True)
+    roots, err = _webdeploy_roots(body)
+    if err:
+        return err
+    src, dst = roots
+    if not src.is_dir():
+        return jsonify({"error": f"not a directory: {src}"}), 400
+    manifest = webdeploy.build_manifest(src, dst)
+    return jsonify({
+        "manifest": manifest,
+        "copy_count": len(manifest.get("copy", [])),
+        "delete_count": len(manifest.get("delete", [])),
+    })
+
+
+@app.post("/api/webdeploy/script")
+def api_webdeploy_script():
+    body = request.get_json(force=True)
+    roots, err = _webdeploy_roots(body)
+    if err:
+        return err
+    src, dst = roots
+    if not src.is_dir():
+        return jsonify({"error": f"not a directory: {src}"}), 400
+    manifest = webdeploy.build_manifest(src, dst)
+    text = webdeploy.emit_robocopy(manifest, src, dst)
+    return jsonify({"script": text})
+
+
+@app.post("/api/webdeploy/apply")
+def api_webdeploy_apply():
+    body = request.get_json(force=True)
+    roots, err = _webdeploy_roots(body)
+    if err:
+        return err
+    src, dst = roots
+    if not src.is_dir():
+        return jsonify({"error": f"not a directory: {src}"}), 400
+    allow_delete = bool(body.get("allow_delete", False))
+    manifest = webdeploy.build_manifest(src, dst)
+    result = webdeploy.apply_copy(manifest, src, dst, allow_delete=allow_delete)
+    return jsonify(result)
+
+
+@app.get("/api/run/<run_id>/<direction>/package.zip")
+def api_package_zip(run_id, direction):
+    if direction == "client_to_105":
+        return jsonify({"error": "package zip is client-targeted scripts only (not client_to_105)"}), 403
+    run = _load_run(run_id)
+    if not run or direction not in run.get("workspaces", {}):
+        return jsonify({"error": "unknown run or direction"}), 404
+    apply_dir = run["run_dir"] / direction / "apply"
+    script_name = "add_update_on_client.sql"
+    script_path = apply_dir / script_name
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if script_path.is_file():
+            zf.write(script_path, script_name)
+        manifest_path = apply_dir / "manifest.json"
+        if manifest_path.is_file():
+            zf.write(manifest_path, "manifest.json")
+        dc = run["run_dir"] / "package" / "datacopy.sql"
+        if dc.is_file():
+            zf.write(dc, "datacopy.sql")
+        tutorial = Path(__file__).resolve().parent / "TUTORIAL.md"
+        if tutorial.is_file():
+            zf.writestr("TUTORIAL-snippet.md", tutorial.read_text(encoding="utf-8")[:8000])
+    if not buf.tell():
+        return jsonify({"error": "nothing to package — assemble a client script first"}), 400
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name=f"{run_id}_{direction}_package.zip")
 
 
 if __name__ == "__main__":

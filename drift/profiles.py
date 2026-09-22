@@ -61,6 +61,17 @@ def _read_profiles() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _strip_live_bookmark(side) -> dict:
+    """Persist server/database/user only — never passwords."""
+    if not isinstance(side, dict):
+        return {}
+    return {
+        "server": str(side.get("server") or ""),
+        "database": str(side.get("database") or ""),
+        "user": str(side.get("user") or ""),
+    }
+
+
 def _write_profiles(data: dict) -> None:
     """Persist the whole map. Read-modify-write of a tiny dict file;
     last-writer-wins is fine for a single-user internal tool."""
@@ -74,7 +85,7 @@ def list_profiles() -> dict:
 
 
 def save_profile(name, master_path="", client_path="", client_active_id=None,
-                 exclusions_snapshot=None) -> dict:
+                 exclusions_snapshot=None, master_live=None, client_live=None) -> dict:
     """Create or overwrite one profile; returns the stored record.
 
     Overwrite-on-same-name is deliberate: a profile is a bookmark, not
@@ -95,6 +106,10 @@ def save_profile(name, master_path="", client_path="", client_active_id=None,
         "client_active_id": client_active_id,
         "exclusions_snapshot": exclusions_snapshot,
     }
+    if master_live is not None:
+        record["master_live"] = _strip_live_bookmark(master_live)
+    if client_live is not None:
+        record["client_live"] = _strip_live_bookmark(client_live)
     data[name] = record
     _write_profiles(data)
     return record

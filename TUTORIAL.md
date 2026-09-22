@@ -7,7 +7,7 @@ Ship an Olives BO update from 105 to a client without breaking their customizati
 | Tab | Purpose | HTTP |
 |---|---|---|
 | **Trimmer** | Paste one proc + ClientActive → reading view (runtime path + harvest list). Not the copy payload. | `POST /api/trim` |
-| **SQL Compare** | One picker, one `run_id`: tables/columns/FKs from `.bak` (`POST /api/compare`) or live triage (`POST /api/livescan`, `SCAN_ONLY`, no apply). Procedure-body lenses live on Drift, not here. | `/api/compare`, `/api/livescan` |
+| **SQL Compare** | Sub-tabs: **Schema** (`.bak` compare, backfill, assemble/rehearse/apply), **Live scan** (`SCAN_ONLY`), **Data copy** (`dst_role: client` only), **Web pages**, **Package** (profiles + `package.zip`). One `run_id` on Schema feeds Drift. | `/api/compare`, `/api/livescan`, `/api/datacopy/*`, `/api/webdeploy/*`, `/api/run/.../backfill`, `/api/run/.../package.zip` |
 | **Drift tool** | Same `run_id` as Compare — three lenses on captured `.master.sql` / `.client.sql`. Preview in UI; **Copy ALTER** goes to the clipboard. | `POST /api/proc_lens` |
 
 **Drift lenses** (`lens` on `/api/proc_lens`): `full` | `active_read` | `active_plus_else`. Radios transform captured text in memory only (no second restore, no live scan).

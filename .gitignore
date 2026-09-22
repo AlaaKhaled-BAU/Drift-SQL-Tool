@@ -1,0 +1,8 @@
+work/
+__pycache__/
+*.pyc
+
+# Legacy VB SQL Compare reference binaries (docs/*.md stay tracked)
+SQL Compare.zip
+SQL Compare/*
+!SQL Compare/*.md

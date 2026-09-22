@@ -410,13 +410,30 @@ tr.finding-row.row-approved:hover {
 }
 .tool-tab {
   background: transparent; border: 1px solid transparent; color: var(--text-dim);
-  padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer; font-size: 13px; font-weight: 600;
+  padding: 10px 14px; min-height: 44px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: 13px; font-weight: 600; box-sizing: border-box;
 }
 .tool-tab:hover { background: var(--surface-2); color: var(--text); }
+.tool-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tool-tab.active {
   background: var(--surface-2); color: var(--text); border-color: var(--border);
 }
 .tool-pane[hidden] { display: none !important; }
+.compare-subtabs { margin-top: 8px; margin-bottom: 14px; }
+.compare-subpane[hidden] { display: none !important; }
+.tab-tip { position: relative; }
+.tab-tip-text {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 50;
+  max-width: 320px; padding: 8px 10px; font-size: 12px; font-weight: 400; line-height: 1.4;
+  color: var(--text); background: var(--surface-3); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+  opacity: 0; pointer-events: none; transition: opacity .15s ease .4s;
+}
+.tab-tip:hover .tab-tip-text, .tab-tip:focus-visible .tab-tip-text { opacity: 1; }
+.filter-chip.active { border-color: var(--accent); color: var(--accent); }
+.live-scan-list { margin: 8px 0 16px 20px; font-size: 12.5px; }
+.datacopy-tables label { display: block; margin: 4px 0; }
+.backfill-panel label { display: block; margin: 6px 0; }
 .app-shell.rail-hidden-on-trimmer { grid-template-columns: 1fr; }
 .app-shell.rail-hidden-on-trimmer .rail { display: none; }
 .trimmer-panel textarea.trim-source { width: 100%; margin: 10px 0; font-family: inherit; }

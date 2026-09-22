@@ -21,6 +21,9 @@ let FILTERED_ROWS = {};             // direction -> full filtered+sorted finding
 let DIFF_VIEW_MODE = localStorage.getItem("driftDiffView") === "unified" ? "unified" : "split";
 let ACTIVE_TOOL = "trimmer";
 let IS_LIVE_SCAN = false;
+let ACTIVE_COMPARE_SUBTAB = "schema";
+let ACTIVE_CONSTRAINTS_ONLY = false;
+let DATACOPY_TABLES = [];
 let LAST_DRIFT_COPY_SQL = "";
 let APPLY_INTERACTIVE_SESSION = null;
 let APPLY_INTERACTIVE_WAITING = null;
@@ -96,24 +99,25 @@ function ubGuardedRow(f) {
 function ubSaveFilters(direction) {
   if (!CURRENT_RUN_ID) return;
   try {
-    localStorage.setItem(`${CURRENT_RUN_ID}:${direction}`, JSON.stringify({
+    sessionStorage.setItem(`${CURRENT_RUN_ID}:${direction}`, JSON.stringify({
       type: ACTIVE_TYPE_FILTER,
       search: ACTIVE_SEARCH,
       page: CURRENT_PAGE[direction] || 0,
+      role: ACTIVE_ROLE_FILTER,
     }));
   } catch (_) { /* storage unavailable -- persistence silently off */ }
 }
 
 function ubLoadFilters(direction) {
   try {
-    const raw = CURRENT_RUN_ID ? localStorage.getItem(`${CURRENT_RUN_ID}:${direction}`) : null;
+    const raw = CURRENT_RUN_ID ? sessionStorage.getItem(`${CURRENT_RUN_ID}:${direction}`) : null;
     const v = raw ? JSON.parse(raw) : null;
     return v && typeof v === "object" ? v : {};
   } catch (_) { return {}; }
 }
 
 function ubClearSavedFilters(direction) {
-  try { localStorage.removeItem(`${CURRENT_RUN_ID}:${direction}`); } catch (_) {}
+  try { sessionStorage.removeItem(`${CURRENT_RUN_ID}:${direction}`); } catch (_) {}
 }
 
 async function ubBatchReview(direction, state) {
@@ -179,8 +183,13 @@ async function ubProbeExecReport(direction) {
   if (!el || !CURRENT_RUN_ID) return;
   let body = null;
   try {
-    const { ok, body: parsed } = await getJSON(`/api/run/${CURRENT_RUN_ID}/file?path=${encodeURIComponent(direction + "/apply/execution_report.json")}`);
-    if (ok && parsed && typeof parsed === "object" && parsed.summary) body = parsed;
+    const rel = direction + "/apply/execution_report.json";
+    const url = `/api/run/${CURRENT_RUN_ID}/file?path=${encodeURIComponent(rel)}&optional=1`;
+    const resp = await fetch(url);
+    if (resp.ok && resp.status !== 204) {
+      const parsed = JSON.parse(await resp.text());
+      if (parsed && typeof parsed === "object" && parsed.summary) body = parsed;
+    }
   } catch (_) { body = null; }
   if (!body) { el.style.display = "none"; el.innerHTML = ""; return; }
   el.innerHTML = ubRenderExecPanel(body);
@@ -211,6 +220,7 @@ async function loadRun(runId) {
   if (!ok) { appendLog("Could not load run: " + body.error, true); return; }
   IS_LIVE_SCAN = false;
   switchTool("compare");
+  switchCompareSubtab("schema");
   document.getElementById("pickerSection").style.display = "none";
   document.getElementById("logSection").style.display = "none";
   document.getElementById("liveResults").style.display = "none";
@@ -561,8 +571,10 @@ function renderWorkspace(direction) {
         <input type="checkbox" id="includeDeletions_${direction}"> include deletions (off by default — never drops the other side's objects unless checked)
       </label>
       <button class="ghost sm" id="assembleBtn_${direction}" style="margin-left:10px;">Assemble</button>
+      <button class="ghost sm" id="rehearseBtn_${direction}" style="margin-left:6px;">Rehearse</button>
       <button class="ghost sm" id="copyApplyBtn_${direction}" style="margin-left:6px;display:none;">Copy script</button>
       ${direction === "105_to_client" ? `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>` : ""}
+      <div id="rehearseResidue_${direction}" class="hint"></div>
       <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled — live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
       <div id="applyOut_${direction}"></div>
     </section>
@@ -609,6 +621,7 @@ function renderWorkspace(direction) {
   });
   const assembleBtn = document.getElementById(`assembleBtn_${direction}`);
   assembleBtn.addEventListener("click", () => assembleApply(direction));
+  document.getElementById(`rehearseBtn_${direction}`)?.addEventListener("click", () => runRehearse(direction));
   if (IS_LIVE_SCAN) {
     assembleBtn.disabled = true;
     const note = document.getElementById(`applyLiveNote_${direction}`);
@@ -634,6 +647,9 @@ function renderWorkspace(direction) {
   document.getElementById(`ubSelectNone_${direction}`).addEventListener("click", () => ubBatchReview(direction, "pending"));
 
   const savedFilters = ubLoadFilters(direction);
+  if (savedFilters.type) ACTIVE_TYPE_FILTER = savedFilters.type;
+  if (savedFilters.search) ACTIVE_SEARCH = savedFilters.search;
+  if (savedFilters.role !== undefined) ACTIVE_ROLE_FILTER = savedFilters.role;
   document.getElementById(`typeFilter_${direction}`).value = ACTIVE_TYPE_FILTER || "";
   const searchInput = document.getElementById(`search_${direction}`);
   searchInput.value = ACTIVE_SEARCH || "";
@@ -662,6 +678,7 @@ function renderFindingsTable(direction) {
     else rows = rows.filter(f => f.role === ACTIVE_ROLE_FILTER && f.category !== "formatting_only" && f.category !== "no_difference");
   }
   if (ACTIVE_TYPE_FILTER) rows = rows.filter(f => f.type === ACTIVE_TYPE_FILTER);
+  if (ACTIVE_CONSTRAINTS_ONLY) rows = rows.filter(f => (f.type || "").includes("Constraint"));
   if (ACTIVE_SEARCH) rows = rows.filter(f => f.bare_name.toLowerCase().includes(ACTIVE_SEARCH));
 
   const sortKey = f => {
@@ -774,6 +791,22 @@ function renderFindingsTable(direction) {
       if (e.target.matches("[data-select-finding]")) return;
       showDetail(direction, tr.dataset.id);
     });
+    tr.tabIndex = 0;
+    tr.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !e.target.matches("input,button,select,textarea")) {
+        e.preventDefault();
+        const cb = tr.querySelector("[data-select-finding]");
+        if (!cb) return;
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event("change", { bubbles: true }));
+        const id = cb.dataset.selectFinding;
+        if (cb.checked) SELECTED_FINDINGS.add(id); else SELECTED_FINDINGS.delete(id);
+        const bar = document.getElementById(`batchBar_${direction}`);
+        bar.classList.toggle("show", SELECTED_FINDINGS.size > 0);
+        document.getElementById(`batchCount_${direction}`).textContent = SELECTED_FINDINGS.size;
+        tr.classList.toggle("selected-row", cb.checked);
+      }
+    });
     tr.querySelector("[data-select-finding]").addEventListener("click", (e) => {
       e.stopPropagation();
       const id = e.target.dataset.selectFinding;
@@ -784,6 +817,27 @@ function renderFindingsTable(direction) {
       tr.classList.toggle("selected-row", e.target.checked);
     });
   });
+}
+
+async function runRehearse(direction) {
+  if (IS_LIVE_SCAN || !CURRENT_RUN_ID) return;
+  const residueEl = document.getElementById(`rehearseResidue_${direction}`);
+  if (residueEl) residueEl.textContent = "Rehearsing…";
+  const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/rehearse`, { method: "POST" });
+  if (!ok) {
+    if (residueEl) residueEl.textContent = body.error || "rehearse failed";
+    return;
+  }
+  const v = body.verification;
+  if (residueEl) {
+    if (v && v.residue_counts) {
+      residueEl.textContent = `Post-rehearse residue counts: ${JSON.stringify(v.residue_counts)}`;
+    } else if (v && v.error) {
+      residueEl.textContent = `Rehearse done; reverify: ${v.error}`;
+    } else {
+      residueEl.textContent = "Rehearse finished (see execution report on disk).";
+    }
+  }
 }
 
 function _csvCell(v) {
@@ -942,6 +996,7 @@ async function loadRichDiff(direction, findingId) {
     `<div class="hint">red = removed, green = added; highlighted words show exactly what changed on a modified line</div>`;
   el.innerHTML = diffHint + (body.kind === "columns" ? renderColumnGrid(body)
     : body.view === "split" ? renderSplitDiffHtml(body) : renderRichDiffHtml(body));
+  if (body.kind === "columns") mountBackfillInputs(direction, findingId, body);
   el.querySelectorAll(".rdiff-collapsed").forEach(marker => marker.addEventListener("click", () => {
     const omittedMsg = `<span class="txt hint">(context lines omitted for width — open the raw .diff download if needed)</span>`;
     marker.outerHTML = marker.classList.contains("rdiff-collapsed-split")
@@ -1225,26 +1280,6 @@ async function assembleApply(direction) {
   }
 }
 
-function liveClientConnPayload() {
-  const applyServer = document.getElementById("applyTargetServer")?.value?.trim();
-  if (applyServer) {
-    const portRaw = document.getElementById("applyTargetPort")?.value?.trim();
-    return {
-      server: applyServer,
-      port: portRaw ? Number(portRaw) : undefined,
-      database: document.getElementById("applyTargetDb")?.value?.trim() || "",
-      user: document.getElementById("applyTargetUser")?.value?.trim() || "",
-      password: document.getElementById("applyTargetPass")?.value || "",
-    };
-  }
-  return {
-    server: document.getElementById("liveClientServer")?.value?.trim() || "",
-    database: document.getElementById("liveClientDb")?.value?.trim() || "",
-    user: document.getElementById("liveClientUser")?.value?.trim() || "",
-    password: document.getElementById("liveClientPass")?.value || "",
-  };
-}
-
 function hideApplyErrorModal() {
   const modal = document.getElementById("applyErrorModal");
   if (modal) modal.hidden = true;
@@ -1388,8 +1423,9 @@ function renderMetricsHtml(m, direction) {
 /* ============================== Tool tabs (Trimmer / SQL Compare / Drift) ============================== */
 
 function switchTool(tool) {
+  if (!tool) return;
   ACTIVE_TOOL = tool;
-  document.querySelectorAll(".tool-tab").forEach(btn => {
+  document.querySelectorAll("#toolTabs .tool-tab").forEach(btn => {
     const on = btn.dataset.tool === tool;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
@@ -1400,32 +1436,237 @@ function switchTool(tool) {
   });
   const shell = document.getElementById("appShell");
   if (shell) shell.classList.toggle("rail-hidden-on-trimmer", tool === "trimmer");
+  if (tool === "compare") switchCompareSubtab(ACTIVE_COMPARE_SUBTAB);
   if (tool === "drift") syncDriftFromRun();
 }
 
-document.querySelectorAll(".tool-tab").forEach(btn =>
+document.querySelectorAll("#toolTabs .tool-tab").forEach(btn =>
   btn.addEventListener("click", () => switchTool(btn.dataset.tool)));
 
-function updateCompareModeUi() {
-  const live = document.getElementById("compareSourceLive")?.checked;
-  const banner = document.getElementById("liveScanBanner");
-  const localPanel = document.getElementById("pickerPanelLocal");
-  const livePanel = document.getElementById("pickerPanelLive");
-  if (localPanel) localPanel.hidden = !!live;
-  if (livePanel) livePanel.hidden = !live;
-  if (banner) banner.hidden = !(live || IS_LIVE_SCAN);
-  const driftLive = document.getElementById("driftLiveBanner");
-  if (driftLive) driftLive.hidden = !IS_LIVE_SCAN;
-}
-
-document.getElementById("compareSourceLocal")?.addEventListener("change", () => {
-  if (document.getElementById("compareSourceLocal")?.checked) {
+function switchCompareSubtab(sub) {
+  ACTIVE_COMPARE_SUBTAB = sub;
+  document.querySelectorAll(".compare-subtab").forEach(btn => {
+    const on = btn.dataset.compareSub === sub;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll(".compare-subpane").forEach(pane => {
+    pane.hidden = pane.dataset.compareSub !== sub;
+  });
+  const shared = document.getElementById("sharedLiveConn");
+  if (shared) shared.hidden = !(sub === "livescan" || sub === "datacopy");
+  if (sub === "schema") {
     IS_LIVE_SCAN = false;
     syncDriftFromRun();
   }
   updateCompareModeUi();
+}
+
+document.querySelectorAll(".compare-subtab").forEach(btn =>
+  btn.addEventListener("click", () => switchCompareSubtab(btn.dataset.compareSub)));
+
+function updateCompareModeUi() {
+  const driftLive = document.getElementById("driftLiveBanner");
+  if (driftLive) driftLive.hidden = !IS_LIVE_SCAN;
+  document.querySelectorAll("[id^=applyLiveNote_]").forEach(el => {
+    el.style.display = IS_LIVE_SCAN ? "block" : "none";
+  });
+  document.querySelectorAll("[id^=assembleBtn_]").forEach(btn => { btn.disabled = IS_LIVE_SCAN; });
+}
+
+function liveMasterConnPayload() {
+  return {
+    server: document.getElementById("liveMasterServer")?.value?.trim() || "",
+    database: document.getElementById("liveMasterDb")?.value?.trim() || "",
+    user: document.getElementById("liveMasterUser")?.value?.trim() || "",
+    password: document.getElementById("liveMasterPass")?.value || "",
+  };
+}
+
+function liveClientConnPayload() {
+  const applyServer = document.getElementById("applyTargetServer")?.value?.trim();
+  if (applyServer && ACTIVE_COMPARE_SUBTAB === "schema") {
+    const portRaw = document.getElementById("applyTargetPort")?.value?.trim();
+    return {
+      server: applyServer,
+      port: portRaw ? Number(portRaw) : undefined,
+      database: document.getElementById("applyTargetDb")?.value?.trim() || "",
+      user: document.getElementById("applyTargetUser")?.value?.trim() || "",
+      password: document.getElementById("applyTargetPass")?.value || "",
+    };
+  }
+  return {
+    server: document.getElementById("liveClientServer")?.value?.trim() || "",
+    database: document.getElementById("liveClientDb")?.value?.trim() || "",
+    user: document.getElementById("liveClientUser")?.value?.trim() || "",
+    password: document.getElementById("liveClientPass")?.value || "",
+  };
+}
+
+function datacopyBody(extra = {}) {
+  return {
+    dst_role: "client",
+    source: liveMasterConnPayload(),
+    destination: liveClientConnPayload(),
+    ...extra,
+  };
+}
+
+async function mountBackfillInputs(direction, findingId, colBody) {
+  const idx = CURRENT_WORKSPACES[direction];
+  const f = idx?.findings?.find(x => x.id === findingId);
+  if (!f || f.type !== "SqlTable" || f.role !== "modified") return;
+  const added = (colBody.rows || []).filter(r => r.status === "added").map(r => r.name);
+  if (!added.length) return;
+  const detailEl = document.getElementById(`detail_${direction}`);
+  if (!detailEl || detailEl.querySelector(".backfill-panel")) return;
+  const panel = document.createElement("div");
+  panel.className = "backfill-panel block";
+  panel.innerHTML = `<div class="hint">Optional backfill for new columns (saved for assemble):</div>` +
+    added.map(c => `<label>${escapeHtml(c)} <input class="backfill-in" data-col="${escapeHtml(c)}" placeholder="optional backfill"></label>`).join("");
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save backfill values";
+  saveBtn.addEventListener("click", async () => {
+    const backfill = {};
+    panel.querySelectorAll(".backfill-in").forEach(inp => {
+      if (inp.value.trim()) backfill[inp.dataset.col] = inp.value.trim();
+    });
+    const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/backfill`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ finding_id: findingId, backfill }),
+    });
+    saveBtn.textContent = ok ? "Saved" : (body.error || "failed");
+  });
+  panel.appendChild(saveBtn);
+  detailEl.insertBefore(panel, detailEl.querySelector(".actions"));
+}
+
+document.getElementById("pkFkChip")?.addEventListener("click", () => {
+  ACTIVE_CONSTRAINTS_ONLY = !ACTIVE_CONSTRAINTS_ONLY;
+  ACTIVE_TYPE_FILTER = "";
+  document.getElementById("pkFkChip")?.classList.toggle("active", ACTIVE_CONSTRAINTS_ONLY);
+  const dir = ACTIVE_DIRECTION || Object.keys(CURRENT_WORKSPACES)[0];
+  if (dir) renderFindingsTable(dir);
 });
-document.getElementById("compareSourceLive")?.addEventListener("change", updateCompareModeUi);
+
+document.getElementById("datacopyLoadTables")?.addEventListener("click", async () => {
+  const { ok, body } = await getJSON("/api/datacopy/tables", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datacopyBody()),
+  });
+  const el = document.getElementById("datacopyTableList");
+  if (!ok) { if (el) el.textContent = body.error; return; }
+  DATACOPY_TABLES = body.tables || [];
+  if (el) el.innerHTML = DATACOPY_TABLES.map(t =>
+    `<label><input type="checkbox" class="dc-table" value="${escapeHtml(t)}" checked> ${escapeHtml(t)}</label>`).join("");
+});
+
+function selectedDatacopyTables() {
+  return [...document.querySelectorAll(".dc-table:checked")].map(cb => cb.value);
+}
+
+document.getElementById("datacopyPreview")?.addEventListener("click", async () => {
+  const tables = selectedDatacopyTables();
+  const { ok, body } = await getJSON("/api/datacopy/preview", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datacopyBody({ tables })),
+  });
+  const out = document.getElementById("datacopyOut");
+  if (!ok) { if (out) out.textContent = body.error; return; }
+  if (out) out.textContent = JSON.stringify(body.tables, null, 2);
+});
+
+document.getElementById("datacopySaveScript")?.addEventListener("click", async () => {
+  const tables = selectedDatacopyTables();
+  const { ok, body } = await getJSON("/api/datacopy/script", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datacopyBody({ tables, run_id: CURRENT_RUN_ID, direction: ACTIVE_DIRECTION || "105_to_client" })),
+  });
+  const out = document.getElementById("datacopyOut");
+  if (!ok) { if (out) out.textContent = body.error; return; }
+  if (out) out.textContent = body.script;
+});
+
+document.getElementById("datacopyApply")?.addEventListener("click", async () => {
+  if (!confirm("Apply data copy to the CLIENT database? This never targets 105.")) return;
+  const tables = selectedDatacopyTables();
+  const { ok, body } = await getJSON("/api/datacopy/apply", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(datacopyBody({ tables })),
+  });
+  const out = document.getElementById("datacopyOut");
+  if (!ok) { if (out) out.textContent = body.error || JSON.stringify(body); return; }
+  if (out) out.textContent = JSON.stringify(body, null, 2);
+});
+
+document.getElementById("webPreviewBtn")?.addEventListener("click", async () => {
+  const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
+  const { ok, body } = await getJSON("/api/webdeploy/preview", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const out = document.getElementById("webOut");
+  if (!ok) { if (out) out.textContent = body.error; return; }
+  if (out) out.textContent = JSON.stringify(body, null, 2);
+});
+
+document.getElementById("webScriptBtn")?.addEventListener("click", async () => {
+  const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
+  const { ok, body } = await getJSON("/api/webdeploy/script", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const out = document.getElementById("webOut");
+  if (!ok) { if (out) out.textContent = body.error; return; }
+  if (out) out.textContent = body.script;
+});
+
+document.getElementById("webApplyBtn")?.addEventListener("click", async () => {
+  const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
+  const { ok, body } = await getJSON("/api/webdeploy/apply", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const out = document.getElementById("webOut");
+  if (!ok) { if (out) out.textContent = body.error; return; }
+  if (out) out.textContent = JSON.stringify(body, null, 2);
+});
+
+document.getElementById("pkgSaveProfile")?.addEventListener("click", async () => {
+  const name = document.getElementById("pkgProfileName")?.value?.trim();
+  if (!name) return;
+  const masterSel = document.getElementById("recent_master");
+  const clientSel = document.getElementById("recent_client");
+  const { ok, body } = await getJSON("/api/profiles", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      master_path: masterSel?.value || "",
+      client_path: clientSel?.value || "",
+      client_active_id: document.getElementById("compareClientActiveId")?.value || null,
+      master_live: liveMasterConnPayload(),
+      client_live: liveClientConnPayload(),
+    }),
+  });
+  const out = document.getElementById("pkgOut");
+  if (out) out.textContent = ok ? `Saved profile ${name}` : (body.error || "failed");
+});
+
+document.getElementById("pkgDeleteProfile")?.addEventListener("click", async () => {
+  const name = document.getElementById("pkgProfileName")?.value?.trim();
+  if (!name) return;
+  const r = await fetch(`/api/profiles/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const body = await r.json();
+  const out = document.getElementById("pkgOut");
+  if (out) out.textContent = r.ok ? `Deleted ${name}` : (body.error || "failed");
+});
+
+document.getElementById("pkgDownloadZip")?.addEventListener("click", () => {
+  const dir = ACTIVE_DIRECTION || "105_to_client";
+  if (!CURRENT_RUN_ID) {
+    document.getElementById("pkgOut").textContent = "Run a .bak compare first.";
+    return;
+  }
+  window.location.href = `/api/run/${CURRENT_RUN_ID}/${dir}/package.zip`;
+});
 
 document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
   const r = await fetch("/api/trim", {
@@ -1549,38 +1790,38 @@ function renderLiveScanResults(body) {
   const el = document.getElementById("liveResults");
   const c = body.compare || {};
   const sum = body.summary || c.summary || {};
+  const listBlock = (title, items, fmt = x => x) =>
+    `<details><summary>${title} (${items.length})</summary><ul class="live-scan-list">` +
+    (items.length ? items.map(x => `<li class="mono">${escapeHtml(fmt(x))}</li>`).join("") : "<li class='hint'>None</li>") +
+    "</ul></details>";
+  const col = c.columns || {};
+  const colLines = [
+    ...(col.added || []).map(x => `+ ${x}`),
+    ...(col.removed || []).map(x => `- ${x}`),
+    ...(col.altered || []).map(x => `~ ${typeof x === "string" ? x : JSON.stringify(x)}`),
+  ];
   el.style.display = "block";
   el.innerHTML = `
     <h2>Live scan results <span class="hint">(SCAN_ONLY — routing triage, not apply)</span></h2>
     <div class="cards">
-      <div class="card"><div class="n">${sum.body_changed ?? c.body_changed?.length ?? 0}</div><div class="l">Body changed</div></div>
       <div class="card"><div class="n">${sum.missing_in_b ?? c.missing_in_b?.length ?? 0}</div><div class="l">Missing on client</div></div>
       <div class="card"><div class="n">${sum.extra_in_b ?? c.extra_in_b?.length ?? 0}</div><div class="l">Extra on client</div></div>
-      <div class="card"><div class="n">${sum.columns_altered ?? c.columns?.altered?.length ?? 0}</div><div class="l">Columns altered</div></div>
+      <div class="card"><div class="n">${colLines.length}</div><div class="l">Column deltas</div></div>
+      <div class="card"><div class="n">${sum.body_changed ?? c.body_changed?.length ?? 0}</div><div class="l">Body changed</div></div>
     </div>
-    <details open><summary>Module body changes (${(c.body_changed || []).length})</summary><pre>${escapeHtml((c.body_changed || []).join("\n"))}</pre></details>
-    <details><summary>Column deltas</summary><pre>${escapeHtml(JSON.stringify(c.columns || {}, null, 2))}</pre></details>
+    ${listBlock("Objects missing on client (in 105, not client)", c.missing_in_b || [])}
+    ${listBlock("Extra on client (not on 105)", c.extra_in_b || [])}
+    ${listBlock("Column shape changes", colLines)}
+    ${listBlock("Module body changed", c.body_changed || [])}
   `;
 }
 
 document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
-  const payload = {
-    master: {
-      server: document.getElementById("liveMasterServer").value,
-      database: document.getElementById("liveMasterDb").value,
-      user: document.getElementById("liveMasterUser").value,
-      password: document.getElementById("liveMasterPass").value,
-    },
-    client: {
-      server: document.getElementById("liveClientServer").value,
-      database: document.getElementById("liveClientDb").value,
-      user: document.getElementById("liveClientUser").value,
-      password: document.getElementById("liveClientPass").value,
-    },
-  };
+  const payload = { master: liveMasterConnPayload(), client: liveClientConnPayload() };
   IS_LIVE_SCAN = true;
   CURRENT_RUN_ID = null;
-  document.getElementById("results").style.display = "none";
+  const results = document.getElementById("results");
+  if (results) results.style.display = "none";
   updateCompareModeUi();
   syncDriftFromRun();
   const btn = document.getElementById("liveScanBtn");
@@ -1603,5 +1844,6 @@ document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
 /* ============================== Init ============================== */
 
 switchTool("trimmer");
+switchCompareSubtab("schema");
 updateCompareModeUi();
 loadRunList();
