@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Olives DB Drift Tool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -17,7 +20,7 @@
       </div>
     </div>
 
-    <button class="rail-btn active" id="newRunBtn" style="background:var(--surface-2);border-color:var(--border);">
+    <button class="rail-btn active rail-btn-emphasis" id="newRunBtn">
       <span>＋</span> New comparison
     </button>
 
@@ -31,26 +34,52 @@
     <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
       <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab tab-tip active" data-tool="trimmer" aria-selected="true"
         title="Paste one procedure and a ClientActive ID to see what that client actually runs; leftover branches are listed as harvest (reading only)."
-        aria-describedby="tipToolTrimmer">Trimmer<span id="tipToolTrimmer" class="tab-tip-text">Paste one procedure and a ClientActive ID to see what that client actually runs; leftover branches are listed as harvest (reading only).</span></button>
+       >Trimmer</button>
       <button type="button" role="tab" id="toolTabCompare" class="tool-tab tab-tip" data-tool="compare" aria-selected="false"
         title="Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift."
-        aria-describedby="tipToolCompare">SQL Compare<span id="tipToolCompare" class="tab-tip-text">Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift.</span></button>
+       >SQL Compare</button>
       <button type="button" role="tab" id="toolTabDrift" class="tool-tab tab-tip" data-tool="drift" aria-selected="false"
         title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
-        aria-describedby="tipToolDrift">Drift tool<span id="tipToolDrift" class="tab-tip-text">Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only.</span></button>
+       >Drift tool</button>
     </nav>
+
+    <div id="workBar" class="work-bar" hidden role="status" aria-live="polite">
+      <div class="work-bar-track"><div class="work-bar-indeterminate"></div></div>
+      <span id="workBarLabel"></span>
+    </div>
 
     <div id="paneTrimmer" class="tool-pane" data-tool="trimmer">
       <h1>Trimmer</h1>
-      <div class="sub">Paste one procedure — see what this <code>@ClientActive</code> actually executes. Harvest lists branches that are not on this client's runtime path (reading view only; copy DDL from SQL Compare or Drift tool).</div>
-      <section class="block trimmer-panel">
+      <div class="sub">Paste one procedure - see what this <code>@ClientActive</code> actually executes. Harvest lists branches that are not on this client's runtime path (reading view only; copy DDL from SQL Compare or Drift tool).</div>
+      <section class="block trimmer-panel glass-panel">
         <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
         <textarea id="trimSource" rows="18" class="trim-source" placeholder="Paste CREATE PROCEDURE …"></textarea>
         <button type="button" id="trimRunBtn">Trim to this client</button>
-        <pre id="trimOut" class="trim-out"></pre>
+        <div id="trimSplit" class="trim-split" hidden>
+          <div class="trim-split-col">
+            <div class="trim-split-head"><span>Original</span></div>
+            <pre id="trimOriginal" class="trim-original" aria-label="Original annotated"></pre>
+          </div>
+          <div class="trim-split-col">
+            <div class="trim-split-head">
+              <span>This client runs</span>
+              <span>
+                <button type="button" id="trimOutCopyBtn" class="ghost sm" disabled>Copy</button>
+                <span id="trimOutCopyToast" class="copy-toast" hidden>Copied</span>
+              </span>
+            </div>
+            <pre id="trimOut" class="trim-out"></pre>
+          </div>
+        </div>
         <div id="trimUnknown" class="run-warning" hidden>Some gates could not be decided; they were kept in the result.</div>
-        <h3>Harvest (not executed by this client — copy later)</h3>
-        <pre id="trimHarvest" class="trim-harvest"></pre>
+        <div class="trim-harvest-head">
+          <h3>Harvest (not executed by this client - copy later)</h3>
+          <span>
+            <button type="button" id="trimHarvestCopyBtn" class="ghost sm" disabled>Copy</button>
+            <span id="trimHarvestCopyToast" class="copy-toast" hidden>Copied</span>
+          </span>
+        </div>
+        <pre id="trimHarvest" class="trim-harvest">Branches this client does not run show up here.</pre>
       </section>
     </div>
 
@@ -60,33 +89,34 @@
 
       <nav class="compare-subtabs tool-tabs" id="compareSubTabs" role="tablist" aria-label="SQL Compare views">
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip active" data-compare-sub="schema" aria-selected="true" aria-label="Schema"
-          title="Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.">Schema<span class="tab-tip-text" aria-hidden="true">Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.</span></button>
+          title="Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.">Schema</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="livescan" aria-selected="false" aria-label="Live scan"
-          title="Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only — no apply.">Live scan<span class="tab-tip-text" aria-hidden="true">Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only — no apply.</span></button>
+          title="Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only - no apply.">Live scan</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="datacopy" aria-selected="false" aria-label="Data copy"
-          title="Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.">Data copy<span class="tab-tip-text" aria-hidden="true">Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.</span></button>
+          title="Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.">Data copy</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="webpages" aria-selected="false" aria-label="Web pages"
-          title="Diff Olives web files by content hash; download a robocopy script or copy to a staging folder. Deletes stay off unless you opt in.">Web pages<span class="tab-tip-text" aria-hidden="true">Diff Olives web files by content hash; download a robocopy script or copy to a staging folder. Deletes stay off unless you opt in.</span></button>
+          title="Diff Olives web files by content hash; download a robocopy script or copy to a staging folder. Deletes stay off unless you opt in.">Web pages</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="package" aria-selected="false" aria-label="Package"
-          title="Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.">Package<span class="tab-tip-text" aria-hidden="true">Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.</span></button>
+          title="Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.">Package</button>
       </nav>
 
       <div id="sharedLiveConn" class="block" hidden>
         <p class="hint">Shared live SQL connection (master = source, client = destination). Data copy always writes to <strong>client</strong> only.</p>
         <div class="live-conn-grid">
-          <fieldset><legend>Master (105) — source</legend>
+          <fieldset><legend>Master (105) - source</legend>
             <input id="liveMasterServer" placeholder="server" class="live-in">
             <input id="liveMasterDb" placeholder="database" class="live-in">
             <input id="liveMasterUser" placeholder="user" class="live-in">
             <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
           </fieldset>
-          <fieldset><legend>Client — destination</legend>
+          <fieldset><legend>Client - destination</legend>
             <input id="liveClientServer" placeholder="server" class="live-in">
             <input id="liveClientDb" placeholder="database" class="live-in">
             <input id="liveClientUser" placeholder="user" class="live-in">
             <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
           </fieldset>
         </div>
+        <p id="liveConnStatus" class="live-conn-status">Enter server and database.</p>
       </div>
 
       <div id="compareSubSchema" class="compare-subpane" data-compare-sub="schema">
@@ -151,11 +181,12 @@
               <button id="go">Compare</button>
             </div>
             <details class="block" id="applyTargetDetails" style="margin-top:12px;">
-              <summary>Client SQL connection (interactive apply to client only — never 105)</summary>
-              <p class="hint">Used by Apply to client after a <code>.bak</code> compare. Scratch MSSQL is typically <code>127.0.0.1</code> port <code>14330</code>.</p>
+              <summary>Client SQL connection (interactive apply to client only - never 105)</summary>
+              <p class="hint">Used by Apply to client after a <code>.bak</code> compare.</p>
+              <p id="applyConnStatus" class="hint">Enter server and database.</p>
               <div class="live-conn-grid">
                 <input id="applyTargetServer" placeholder="server" class="live-in">
-                <input id="applyTargetPort" placeholder="port (optional)" class="live-in">
+                <input id="applyTargetPort" placeholder="port" class="live-in">
                 <input id="applyTargetDb" placeholder="database" class="live-in">
                 <input id="applyTargetUser" placeholder="user" class="live-in">
                 <input id="applyTargetPass" type="password" placeholder="password" class="live-in" autocomplete="off">
@@ -165,21 +196,21 @@
         </section>
 
         <section class="block" id="logSection" style="display:none;">
-          <div class="block-head"><h2>Run log</h2> <span class="hint">live progress while restore/compare runs — closes automatically on success or failure</span></div>
+          <div class="block-head"><h2>Run log</h2> <span class="hint">live progress while restore/compare runs - closes automatically on success or failure</span></div>
           <div id="log"></div>
         </section>
 
         <details class="legend block" id="compareLegend">
-          <summary>What do these mean? — legend</summary>
+          <summary>What do these mean? - legend</summary>
           <div class="legend-grid">
             <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Client → 105</b> this means the client added it.</div></div>
-            <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs — a body/parameter/column change.</div></div>
+            <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs - a body/parameter/column change.</div></div>
             <div class="lg-item"><span class="tag only_on_other">only on other side</span><div>Informational: the other side has this, this direction's source doesn't. Never auto-deleted.</div></div>
-            <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't — no behavior change.</div></div>
-            <div class="lg-item"><span class="prio high"></span><div><b>High priority</b> — &gt;5 known callers, or a column was removed/retyped. Review first.</div></div>
-            <div class="lg-item"><span class="prio medium"></span><div><b>Medium priority</b> — other real structural drift.</div></div>
-            <div class="lg-item"><span class="prio low"></span><div><b>Low priority</b> — formatting-only or documentation-only.</div></div>
-            <div class="lg-item"><span class="ai-badge">AI suggestion</span><div>Advisory only, from an LLM reading the diff shown next to it. Never decides, never auto-approves — verify before acting.</div></div>
+            <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't - no behavior change.</div></div>
+            <div class="lg-item"><span class="prio high"></span><div><b>High priority</b> - &gt;5 known callers, or a column was removed/retyped. Review first.</div></div>
+            <div class="lg-item"><span class="prio medium"></span><div><b>Medium priority</b> - other real structural drift.</div></div>
+            <div class="lg-item"><span class="prio low"></span><div><b>Low priority</b> - formatting-only or documentation-only.</div></div>
+            <div class="lg-item"><span class="ai-badge">AI suggestion</span><div>Advisory only, from an LLM reading the diff shown next to it. Never decides, never auto-approves - verify before acting.</div></div>
           </div>
         </details>
 
@@ -194,7 +225,7 @@
       <div id="compareSubLivescan" class="compare-subpane" data-compare-sub="livescan" hidden>
         <div id="liveScanBanner" class="run-warning">Live scan is <strong>SCAN_ONLY</strong>: triage preview only. Apply is disabled. Run a <code>.bak</code> compare on Schema for apply scripts.</div>
         <div class="run-actions">
-          <button type="button" id="liveScanBtn">Run live scan</button>
+          <button type="button" id="liveScanBtn" disabled>Run live scan</button>
         </div>
         <div id="liveResults" class="block" style="display:none;"></div>
       </div>
@@ -202,12 +233,16 @@
       <div id="compareSubDatacopy" class="compare-subpane" data-compare-sub="datacopy" hidden>
         <section class="block">
           <p class="hint">Copy config rows (menu, programs, messages, pages) from master to <strong>client only</strong>. Preview counts before apply.</p>
-          <button type="button" id="datacopyLoadTables">Load config tables</button>
+          <button type="button" id="datacopyLoadTables" disabled>Load config tables</button>
           <div id="datacopyTableList" class="datacopy-tables"></div>
           <div class="run-actions">
-            <button type="button" id="datacopyPreview">Preview diff counts</button>
-            <button type="button" id="datacopySaveScript">Save merge script</button>
-            <button type="button" id="datacopyApply">Apply to client</button>
+            <button type="button" id="datacopyPreview" disabled>Preview diff counts</button>
+            <button type="button" id="datacopySaveScript" disabled>Save merge script</button>
+            <button type="button" id="datacopyApply" disabled>Apply to client</button>
+          </div>
+          <div class="out-copy-row">
+            <span id="datacopyCopyToast" class="copy-toast" hidden>Copied</span>
+            <button type="button" id="datacopyOutCopyBtn" class="ghost sm" disabled>Copy</button>
           </div>
           <pre id="datacopyOut" class="trim-out"></pre>
         </section>
@@ -223,13 +258,17 @@
             <button type="button" id="webScriptBtn">Save robocopy script</button>
             <button type="button" id="webApplyBtn">Apply to staging folder</button>
           </div>
+          <div class="out-copy-row">
+            <span id="webOutCopyToast" class="copy-toast" hidden>Copied</span>
+            <button type="button" id="webOutCopyBtn" class="ghost sm" disabled>Copy</button>
+          </div>
           <pre id="webOut" class="trim-out"></pre>
         </section>
       </div>
 
       <div id="compareSubPackage" class="compare-subpane" data-compare-sub="package" hidden>
         <section class="block">
-          <p class="hint">Profiles store paths and live hostnames — never passwords.</p>
+          <p class="hint">Profiles store paths and live hostnames - never passwords.</p>
           <label>Profile name <input id="pkgProfileName" class="live-in"></label>
           <button type="button" id="pkgSaveProfile">Save profile</button>
           <button type="button" class="ghost sm" id="pkgDeleteProfile">Delete profile</button>
@@ -241,9 +280,9 @@
 
     <div id="paneDrift" class="tool-pane" data-tool="drift" hidden>
       <h1>Drift tool</h1>
-      <div class="sub">Procedure-body drift between captured <code>.master.sql</code> / <code>.client.sql</code> for the current compare <code>run_id</code>. Lenses transform captured text in memory — they do not re-query SQL Server.</div>
+      <div class="sub">Procedure-body drift between captured <code>.master.sql</code> / <code>.client.sql</code> for the current compare <code>run_id</code>. Lenses transform captured text in memory - they do not re-query SQL Server.</div>
       <div id="driftBakBanner" class="run-warning">Run a <code>.bak</code> SQL Compare first (same picker / <code>run_id</code>). Live scan cannot drive Drift lenses.</div>
-      <div id="driftLiveBanner" class="run-warning" hidden>Live scan mode — Drift lenses are disabled until you run a <code>.bak</code> compare.</div>
+      <div id="driftLiveBanner" class="run-warning" hidden>Live scan mode - Drift lenses are disabled until you run a <code>.bak</code> compare.</div>
 
       <section class="block drift-panel" id="driftControls" hidden>
         <div class="drift-row">
@@ -270,8 +309,8 @@
         <pre id="driftPreview" class="drift-preview"></pre>
         <div class="drift-copy-row">
           <span id="driftCopyKind" class="hint"></span>
-          <button type="button" id="driftCopyBtn" disabled>Copy ALTER script</button>
-          <span id="driftCopyToast" class="hint" hidden>Copied to clipboard.</span>
+          <button type="button" id="driftCopyBtn" class="ghost sm" disabled>Copy</button>
+          <span id="driftCopyToast" class="copy-toast" hidden>Copied</span>
         </div>
         <pre id="driftCopySql" class="drift-copy-sql" hidden></pre>
       </section>
@@ -282,7 +321,7 @@
 <div id="applyErrorModal" class="apply-modal" hidden role="dialog" aria-labelledby="applyErrorTitle" aria-modal="true">
   <div class="apply-modal-backdrop" id="applyErrorBackdrop"></div>
   <div class="apply-modal-panel">
-    <h2 id="applyErrorTitle">SQL error — choose action</h2>
+    <h2 id="applyErrorTitle">SQL error - choose action</h2>
     <p id="applyErrorMsgno" class="hint"></p>
     <pre id="applyErrorPreview" class="apply-error-preview"></pre>
     <p id="applyErrorMessage" class="apply-error-message"></p>

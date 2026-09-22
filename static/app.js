@@ -40,7 +40,7 @@ const CHANGE_KIND_LABEL = {
   structural: "Definition changed",
 };
 const REC_LABEL = {
-  back_port: "Back-port", skip_likely_noise: "Likely noise — skip", needs_human_review: "Needs human review",
+  back_port: "Back-port", skip_likely_noise: "Likely noise - skip", needs_human_review: "Needs human review",
   client_customization_likely: "Likely client customization",
 };
 // Mirrors compare.PROGRAMMABLE_TYPES (Python) -- same hand-mirrored pattern
@@ -50,6 +50,120 @@ const PROGRAMMABLE_TYPES_JS = new Set([
   "SqlInlineTableValuedFunction", "SqlMultiStatementTableValuedFunction",
   "SqlDmlTrigger", "SqlDatabaseDdlTrigger",
 ]);
+
+const HARVEST_EMPTY_COPY = "Branches this client does not run show up here.";
+
+function setBusy(label, btn) {
+  const bar = document.getElementById("workBar");
+  if (bar) bar.hidden = false;
+  const lbl = document.getElementById("workBarLabel");
+  if (lbl) lbl.textContent = label;
+  document.querySelector(".main-content")?.setAttribute("aria-busy", "true");
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.prevLabel = btn.textContent;
+    btn.textContent = "Working…";
+  }
+}
+
+function setBusyLabel(label) {
+  const lbl = document.getElementById("workBarLabel");
+  if (lbl) lbl.textContent = (label || "").slice(0, 120);
+}
+
+function clearBusy(btn) {
+  const bar = document.getElementById("workBar");
+  if (bar) bar.hidden = true;
+  document.querySelector(".main-content")?.removeAttribute("aria-busy");
+  if (btn && btn.dataset.prevLabel) {
+    btn.textContent = btn.dataset.prevLabel;
+    delete btn.dataset.prevLabel;
+    btn.disabled = false;
+  }
+  updateConnFieldGates();
+}
+
+function normalizeTrimLine(line) {
+  const t = (line || "").trim();
+  if (!t) return "";
+  return t.replace(/\s+/g, " ");
+}
+
+function classifyTrimSourceLines(source, trimmedSql, harvest) {
+  const trimmedBlob = trimmedSql || "";
+  const harvestBlob = (harvest || []).map(h => h.body || "").join("\n");
+  return (source || "").split("\n").map(raw => {
+    const norm = normalizeTrimLine(raw);
+    if (!norm) return { raw, kind: "plain" };
+    if (trimmedBlob.includes(norm)) return { raw, kind: "kept" };
+    if (harvestBlob.includes(norm)) return { raw, kind: "trimmed" };
+    return { raw, kind: "plain" };
+  });
+}
+
+function renderTrimOriginalAnnotated(lines) {
+  return lines.map(({ raw, kind }) => {
+    const cls = kind === "kept" ? "trim-line-kept" : kind === "trimmed" ? "trim-line-cut" : "trim-line-plain";
+    return `<span class="${cls}">${escapeHtml(raw)}</span>`;
+  }).join("\n");
+}
+
+function showCopyToast(toastEl) {
+  if (!toastEl) return;
+  toastEl.hidden = false;
+  setTimeout(() => { toastEl.hidden = true; }, 2000);
+}
+
+function syncCopyBtnForPre(btn, pre, emptyPlaceholder) {
+  if (!btn || !pre) return;
+  const text = (pre.textContent || "").trim();
+  btn.disabled = !text || (emptyPlaceholder && text === emptyPlaceholder);
+}
+
+function wireCopyButton(btnId, preId, toastId, emptyPlaceholder) {
+  const btn = document.getElementById(btnId);
+  const pre = document.getElementById(preId);
+  const toast = toastId ? document.getElementById(toastId) : null;
+  if (!btn || !pre) return;
+  syncCopyBtnForPre(btn, pre, emptyPlaceholder);
+  btn.addEventListener("click", async () => {
+    const text = (pre.textContent || "").trim();
+    if (!text || (emptyPlaceholder && text === emptyPlaceholder)) return;
+    await navigator.clipboard.writeText(text);
+    showCopyToast(toast);
+  });
+}
+
+function liveSideReady(serverId, dbId) {
+  const server = document.getElementById(serverId)?.value?.trim();
+  const database = document.getElementById(dbId)?.value?.trim();
+  return !!(server && database);
+}
+
+function updateConnFieldGates() {
+  const masterOk = liveSideReady("liveMasterServer", "liveMasterDb");
+  const clientOk = liveSideReady("liveClientServer", "liveClientDb");
+  const applyOk = liveSideReady("applyTargetServer", "applyTargetDb");
+  const liveReady = masterOk && clientOk;
+  const status = document.getElementById("liveConnStatus");
+  if (status) {
+    status.textContent = liveReady ? "" : "Enter server and database.";
+  }
+  const applyStatus = document.getElementById("applyConnStatus");
+  if (applyStatus) {
+    applyStatus.textContent = applyOk ? "" : "Enter server and database.";
+  }
+  const liveScanBtn = document.getElementById("liveScanBtn");
+  if (liveScanBtn) liveScanBtn.disabled = !liveReady;
+  ["datacopyLoadTables", "datacopyPreview", "datacopySaveScript", "datacopyApply"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !liveReady;
+  });
+  document.querySelectorAll("[id^=applyClientBtn_]").forEach(btn => {
+    if (btn.style.display === "none") return;
+    btn.disabled = !applyOk || IS_LIVE_SCAN;
+  });
+}
 
 function escapeHtml(s) {
   return (s ?? "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -127,7 +241,7 @@ async function ubBatchReview(direction, state) {
   const guardedCount = rows.length - targets.length;
   if (!statusEl) return;
   if (!targets.length) {
-    statusEl.textContent = guardedCount ? `${guardedCount} row(s), all guarded (cosmetic / irrelevant) — untouched` : "no rows in current filter";
+    statusEl.textContent = guardedCount ? `${guardedCount} row(s), all guarded (cosmetic / irrelevant) - untouched` : "no rows in current filter";
     return;
   }
   const verb = state === "approved" ? "Approving" : "Clearing";
@@ -205,7 +319,7 @@ async function loadRunList() {
   el.innerHTML = body.map(r => {
     const c105 = r.counts.client_to_105, c105c = r.counts["105_to_client"];
     const summary = c105 ? `${c105.added + c105.modified + c105.only_on_other} finding(s)` :
-                    (c105c ? `${c105c.added + c105c.modified + c105c.only_on_other} finding(s)` : "—");
+                    (c105c ? `${c105c.added + c105c.modified + c105c.only_on_other} finding(s)` : " - ");
     return `<div class="run-item" data-run="${r.run_id}">
       <div class="rn"><span>${escapeHtml(r.client)}</span><span class="kicker">${r.total_seconds ?? "?"}s</span></div>
       <div class="rd"><b>${summary}</b> vs ${escapeHtml(r.master)}</div>
@@ -337,34 +451,44 @@ goBtn.addEventListener("click", async () => {
   document.getElementById("logSection").style.display = "block";
   document.getElementById("results").style.display = "none";
   document.getElementById("liveResults").style.display = "none";
-  goBtn.disabled = true;
-  goBtn.textContent = "Running…";
+  setBusy("Comparing…", goBtn);
 
-  const { ok, body } = await getJSON("/api/compare", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ master, client, directions, type_filter: typeFilter, client_active_id: clientActiveId }),
-  });
+  let ok, body;
+  try {
+    ({ ok, body } = await getJSON("/api/compare", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ master, client, directions, type_filter: typeFilter, client_active_id: clientActiveId }),
+    }));
+  } catch (err) {
+    appendLog("ERROR: " + (err && err.message ? err.message : err), true);
+    clearBusy(goBtn);
+    return;
+  }
   if (!ok) {
     appendLog("ERROR: " + body.error, true);
-    goBtn.disabled = false; goBtn.textContent = "Compare";
+    clearBusy(goBtn);
     return;
   }
 
   const es = new EventSource(`/api/stream/${body.job_id}`);
-  es.addEventListener("log", (e) => appendLog(JSON.parse(e.data)));
+  es.addEventListener("log", (e) => {
+    const msg = JSON.parse(e.data);
+    appendLog(msg);
+    setBusyLabel(msg);
+  });
   es.addEventListener("result", (e) => {
     const result = JSON.parse(e.data);
     document.getElementById("pickerSection").style.display = "none";
     renderResults(result.run_id, result.meta, result.workspaces);
     syncDriftFromRun();
     es.close();
-    goBtn.disabled = false; goBtn.textContent = "Compare";
+    clearBusy(goBtn);
     loadRunList();
   });
   es.addEventListener("error", (e) => {
     if (e.data) appendLog("FAILED: " + JSON.parse(e.data), true);
     es.close();
-    goBtn.disabled = false; goBtn.textContent = "Compare";
+    clearBusy(goBtn);
   });
 });
 
@@ -413,35 +537,45 @@ function renderResults(runId, meta, workspaces) {
 }
 
 async function runRecompare(runId, direction, btn) {
-  const originalLabel = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = `Re-comparing ${DIRECTION_LABEL[direction] || direction}…`;
+  setBusy(`Re-comparing ${DIRECTION_LABEL[direction] || direction}…`, btn);
   document.getElementById("logSection").style.display = "block";
   appendLog(`--- re-compare ${DIRECTION_LABEL[direction] || direction}: reusing cached .dacpac pair, no restore ---`);
 
-  const { ok, body } = await getJSON(`/api/run/${runId}/recompare`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ direction }),
-  });
+  let ok, body;
+  try {
+    ({ ok, body } = await getJSON(`/api/run/${runId}/recompare`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction }),
+    }));
+  } catch (err) {
+    appendLog("ERROR: " + (err && err.message ? err.message : err), true);
+    clearBusy(btn);
+    return;
+  }
   if (!ok) {
     appendLog("ERROR: " + body.error, true);
-    btn.disabled = false; btn.textContent = originalLabel;
+    clearBusy(btn);
     return;
   }
 
   const es = new EventSource(`/api/stream/${body.job_id}`);
-  es.addEventListener("log", (e) => appendLog(JSON.parse(e.data)));
+  es.addEventListener("log", (e) => {
+    const msg = JSON.parse(e.data);
+    appendLog(msg);
+    setBusyLabel(msg);
+  });
   es.addEventListener("result", (e) => {
     const result = JSON.parse(e.data);
     es.close();
     renderResults(result.run_id, result.meta, result.workspaces);
     switchWorkspace(direction);
     loadRunList();
+    clearBusy(btn);
   });
   es.addEventListener("error", (e) => {
     if (e.data) appendLog("FAILED: " + JSON.parse(e.data), true);
     es.close();
-    btn.disabled = false; btn.textContent = originalLabel;
+    clearBusy(btn);
   });
 }
 
@@ -490,7 +624,7 @@ function priorityOf(f) {
 function priorityTitle(f) {
   if (!f.priority_breakdown || !f.priority_breakdown.length) return `${priorityOf(f)} priority (score ${f.priority_score ?? "?"})`;
   const lines = f.priority_breakdown.map(([signal, pts]) => `${pts > 0 ? "+" : ""}${pts}  ${signal}`);
-  return `${priorityOf(f)} priority — score ${f.priority_score}\n${lines.join("\n")}`;
+  return `${priorityOf(f)} priority - score ${f.priority_score}\n${lines.join("\n")}`;
 }
 const PRIO_RANK = { high: 0, medium: 1, low: 2 };
 
@@ -516,7 +650,7 @@ function renderWorkspace(direction) {
     : "";
 
   if (!idx.findings.length) {
-    root.innerHTML = `${filterBanner}<div class="ub-exec-panel" id="ubExecPanel_${direction}" style="display:none;"></div><div class="empty-state">No structural drift in this direction. (${c.documentation} documentation-only, ${c.cascading} cascading, ${c.excluded} excluded — not shown as drift.)</div>`;
+    root.innerHTML = `${filterBanner}<div class="ub-exec-panel" id="ubExecPanel_${direction}" style="display:none;"></div><div class="empty-state">No structural drift in this direction. (${c.documentation} documentation-only, ${c.cascading} cascading, ${c.excluded} excluded - not shown as drift.)</div>`;
     ubProbeExecReport(direction);
     return;
   }
@@ -568,21 +702,21 @@ function renderWorkspace(direction) {
     <section>
       <h2>Assemble apply script (approved findings only, additive)</h2>
       <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:12.5px;">
-        <input type="checkbox" id="includeDeletions_${direction}"> include deletions (off by default — never drops the other side's objects unless checked)
+        <input type="checkbox" id="includeDeletions_${direction}"> include deletions (off by default - never drops the other side's objects unless checked)
       </label>
       <button class="ghost sm" id="assembleBtn_${direction}" style="margin-left:10px;">Assemble</button>
       <button class="ghost sm" id="rehearseBtn_${direction}" style="margin-left:6px;">Rehearse</button>
       <button class="ghost sm" id="copyApplyBtn_${direction}" style="margin-left:6px;display:none;">Copy script</button>
       ${direction === "105_to_client" ? `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>` : ""}
       <div id="rehearseResidue_${direction}" class="hint"></div>
-      <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled — live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
+      <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled - live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
       <div id="applyOut_${direction}"></div>
     </section>
 
     <section>
       <h2>Quality scorecard (computed from this run's own evidence, not self-reported)</h2>
       <button class="ghost sm" id="metricsBtn_${direction}">Compute metrics</button>
-      <span class="hint" style="margin-left:10px;">re-draws an independent random sample each click — click again for a second opinion</span>
+      <span class="hint" style="margin-left:10px;">re-draws an independent random sample each click - click again for a second opinion</span>
       <div id="metricsOut_${direction}"></div>
     </section>
 
@@ -662,7 +796,7 @@ function renderWorkspace(direction) {
 function renderLostFixes(lostFixes) {
   return `<div class="lostfix"><h3>⚠ Possible lost fixes</h3>` +
     lostFixes.map(f =>
-      `<div>[${f.side}] ${f.object} — logged by ${f.logged_by} at ${f.logged_at}, but current definition no longer matches that logged change.</div>`
+      `<div>[${f.side}] ${f.object} - logged by ${f.logged_by} at ${f.logged_at}, but current definition no longer matches that logged change.</div>`
     ).join("") + `</div>`;
 }
 
@@ -751,7 +885,7 @@ function renderFindingsTable(direction) {
       <td class="rev-${f.review}">${f.review}</td>
     </tr>`;
   }).join("") || (ACTIVE_ROLE_FILTER === "DEFAULT_CLIENT_HAS"
-    ? `<tr><td colspan="8">No findings match this filter — client and 105 don't differ in anything the client
+    ? `<tr><td colspan="8">No findings match this filter - client and 105 don't differ in anything the client
         added or changed. <a href="#" data-show-all="${direction}">Show everything, including "only on 105"</a></td></tr>`
     : `<tr><td colspan="8">No findings match this filter.</td></tr>`);
 
@@ -884,7 +1018,7 @@ async function showDetail(direction, findingId) {
     ? `<div class="detail-meta"><b>Attribution:</b> ${f.attribution.map(a => `[${a.side}] ${a.event} by ${a.login || "?"} at ${a.when}`).join(" · ")}</div>`
     : "";
   const callersHtml = f.callers && f.callers.count
-    ? `<div class="detail-meta"><b>Blast radius:</b> ${f.callers.count} caller(s) — ${f.callers.names.join(", ")}${f.callers.unresolved ? ` (+${f.callers.unresolved} unresolved)` : ""}</div>`
+    ? `<div class="detail-meta"><b>Blast radius:</b> ${f.callers.count} caller(s) - ${f.callers.names.join(", ")}${f.callers.unresolved ? ` (+${f.callers.unresolved} unresolved)` : ""}</div>`
     : `<div class="detail-meta"><b>Blast radius:</b> no known callers found</div>`;
 
   detailEl.innerHTML = `
@@ -893,7 +1027,7 @@ async function showDetail(direction, findingId) {
       <span class="tag ${f.category === "formatting_only" || f.category === "no_difference" ? "formatting" : f.role}">${roleLabel}</span>
       <span class="prio ${priorityOf(f)}" title="${escapeHtml(priorityTitle(f))}"></span>
     </div>
-    <div class="detail-summary">${escapeHtml(f.summary || (CHANGE_KIND_LABEL[f.change_kind] || ""))}${f.change_kind ? ` — <i>${CHANGE_KIND_LABEL[f.change_kind] || f.change_kind}</i>` : ""}</div>
+    <div class="detail-summary">${escapeHtml(f.summary || (CHANGE_KIND_LABEL[f.change_kind] || ""))}${f.change_kind ? ` - <i>${CHANGE_KIND_LABEL[f.change_kind] || f.change_kind}</i>` : ""}</div>
     ${attribHtml}${callersHtml}
     ${f.type !== "SqlTable" ? `<div class="diff-view-toggle">
       <button class="view-toggle-btn${DIFF_VIEW_MODE === "split" ? " active" : ""}" data-view="split">Split</button>
@@ -904,7 +1038,7 @@ async function showDetail(direction, findingId) {
     <div id="aiSlot_${direction}_${findingId}"></div>
     ${showPortButton ? `<div class="port-105-row">
       <button class="ai" id="portTo105Btn_${direction}_${findingId}">⇒ Port to 105 (AI-assisted merge)</button>
-      <span class="hint">sends this finding's changed statements to DeepSeek and proposes how to fold them into 105's current body as an @ClientActive branch — nothing is applied until you review and accept it below</span>
+      <span class="hint">sends this finding's changed statements to DeepSeek and proposes how to fold them into 105's current body as an @ClientActive branch - nothing is applied until you review and accept it below</span>
       <div id="mergeSlot_${direction}_${findingId}"></div>
     </div>` : ""}
     <div class="actions">
@@ -938,12 +1072,12 @@ async function loadStatementMap(direction, findingId, summary) {
   const el = document.getElementById(`stmtMap_${direction}_${findingId}`);
   if (!el) return;
   if (!summary.ok) {
-    el.innerHTML = `<div class="stmt-map-unavailable">Statement structure unavailable (${escapeHtml(summary.reason)}) — showing text diff only.</div>`;
+    el.innerHTML = `<div class="stmt-map-unavailable">Statement structure unavailable (${escapeHtml(summary.reason)}) - showing text diff only.</div>`;
     return;
   }
   const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/statements/${findingId}`);
   if (!ok || !body.ok) {
-    el.innerHTML = `<div class="stmt-map-unavailable">Statement structure unavailable (${escapeHtml((body && body.reason) || "?")}) — showing text diff only.</div>`;
+    el.innerHTML = `<div class="stmt-map-unavailable">Statement structure unavailable (${escapeHtml((body && body.reason) || "?")}) - showing text diff only.</div>`;
     return;
   }
   el.innerHTML = renderStatementMapHtml(body.aligned);
@@ -970,7 +1104,7 @@ function renderStatementMapHtml(aligned) {
       <span class="stmt-text">${escapeHtml(firstLine)}</span>
     </div>`;
   }).join("");
-  return `<div class="hint">each row is one T-SQL statement, aligned by content not position — click a row to jump to it in the diff below</div><div class="stmt-map">${rows}</div>`;
+  return `<div class="hint">each row is one T-SQL statement, aligned by content not position - click a row to jump to it in the diff below</div><div class="stmt-map">${rows}</div>`;
 }
 
 function scrollDiffToText(direction, findingId, searchText) {
@@ -998,7 +1132,7 @@ async function loadRichDiff(direction, findingId) {
     : body.view === "split" ? renderSplitDiffHtml(body) : renderRichDiffHtml(body));
   if (body.kind === "columns") mountBackfillInputs(direction, findingId, body);
   el.querySelectorAll(".rdiff-collapsed").forEach(marker => marker.addEventListener("click", () => {
-    const omittedMsg = `<span class="txt hint">(context lines omitted for width — open the raw .diff download if needed)</span>`;
+    const omittedMsg = `<span class="txt hint">(context lines omitted for width - open the raw .diff download if needed)</span>`;
     marker.outerHTML = marker.classList.contains("rdiff-collapsed-split")
       ? `<div class="rdiff-row equal"><div class="rdiff-cell left equal">${omittedMsg}</div><div class="rdiff-cell right equal"></div></div>`
       : `<div class="rdiff-line equal"><span class="gut"></span>${omittedMsg}</div>`;
@@ -1077,7 +1211,7 @@ function renderAiCardHtml(result) {
   if (!result.ok) return `<div class="ai-card"><div class="ai-explain">AI unavailable right now: ${escapeHtml(result.error)}</div></div>`;
   if (result.unstructured) {
     return `<div class="ai-card">
-      <div class="ai-card-head"><span class="ai-badge">AI suggestion — verify</span><span class="ai-model">${escapeHtml(result.model)} (unstructured)</span></div>
+      <div class="ai-card-head"><span class="ai-badge">AI suggestion - verify</span><span class="ai-model">${escapeHtml(result.model)} (unstructured)</span></div>
       <div class="ai-explain mono" style="white-space:pre-wrap;">${escapeHtml(result.raw_text)}</div>
     </div>`;
   }
@@ -1092,14 +1226,14 @@ function renderAiCardHtml(result) {
   // never actually gave.
   const eq = (s.equivalence_guess && typeof s.equivalence_guess === "object") ? s.equivalence_guess : null;
   return `<div class="ai-card">
-    <div class="ai-card-head"><span class="ai-badge">AI suggestion — verify</span><span class="ai-model">${escapeHtml(result.model)}</span></div>
+    <div class="ai-card-head"><span class="ai-badge">AI suggestion - verify</span><span class="ai-model">${escapeHtml(result.model)}</span></div>
     <div class="ai-explain">${escapeHtml(s.explanation)}</div>
     ${flags.length ? `<div class="ai-flags">${flags.map(f => `<span class="ai-flag">⚠ ${escapeHtml(f)}</span>`).join("")}</div>` : ""}
     <div class="ai-rec">
       <span class="ai-rec-badge ${s.recommendation}">${REC_LABEL[s.recommendation] || s.recommendation}</span>
       <span>${escapeHtml(s.recommendation_reasoning)}</span>
     </div>
-    ${eq ? `<div class="ai-equiv">Equivalence guess: ${eq.is_likely_equivalent ? "likely equivalent" : "likely NOT equivalent"} (${escapeHtml(eq.confidence)} confidence) — ${escapeHtml(eq.reasoning)}</div>` : ""}
+    ${eq ? `<div class="ai-equiv">Equivalence guess: ${eq.is_likely_equivalent ? "likely equivalent" : "likely NOT equivalent"} (${escapeHtml(eq.confidence)} confidence) - ${escapeHtml(eq.reasoning)}</div>` : ""}
   </div>`;
 }
 
@@ -1135,7 +1269,7 @@ async function askAiBatch(direction) {
   es.addEventListener("log", (e) => { lines.push(JSON.parse(e.data)); bar.innerHTML = `<span class="hint">${escapeHtml(lines[lines.length - 1])}</span>`; });
   es.addEventListener("result", (e) => {
     es.close();
-    bar.innerHTML = `<span>Done — ${ids.length} finding(s) triaged. Open a finding to see its AI card.</span> <button class="ghost sm" id="batchClearBtn2_${direction}">Clear selection</button>`;
+    bar.innerHTML = `<span>Done - ${ids.length} finding(s) triaged. Open a finding to see its AI card.</span> <button class="ghost sm" id="batchClearBtn2_${direction}">Clear selection</button>`;
     document.getElementById(`batchClearBtn2_${direction}`).addEventListener("click", () => {
       SELECTED_FINDINGS = new Set(); renderFindingsTable(direction);
     });
@@ -1182,7 +1316,7 @@ async function portToOneOhFive(direction, findingId) {
   const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/merge_propose/${findingId}`, { method: "POST" });
   if (!ok) { slot.innerHTML = `<div class="ai-card"><div class="ai-explain">Merge proposal unavailable: ${escapeHtml(body.error)}</div></div>`; return; }
   if (body.unstructured) {
-    slot.innerHTML = `<div class="ai-card"><div class="ai-explain">AI response didn't parse as the expected merge shape — raw output below, not usable directly.</div>
+    slot.innerHTML = `<div class="ai-card"><div class="ai-explain">AI response didn't parse as the expected merge shape - raw output below, not usable directly.</div>
       <pre class="mono" style="white-space:pre-wrap;">${escapeHtml(body.raw_text)}</pre></div>`;
     return;
   }
@@ -1194,10 +1328,10 @@ function renderMergeProposal(direction, findingId, result) {
   const sanity = result.sanity_check || {};
   slot.innerHTML = `
     <div class="ai-card">
-      <div class="ai-card-head"><span class="ai-badge">AI-proposed merge — verify before accepting</span></div>
-      <div class="hint">this is a PROPOSAL only — nothing is applied yet. Review the diff, edit the text if needed, then Accept or Discard.</div>
+      <div class="ai-card-head"><span class="ai-badge">AI-proposed merge - verify before accepting</span></div>
+      <div class="hint">this is a PROPOSAL only - nothing is applied yet. Review the diff, edit the text if needed, then Accept or Discard.</div>
       ${result.warning ? `<div class="ai-flags"><span class="ai-flag">⚠ ${escapeHtml(result.warning)}</span></div>` : ""}
-      ${!sanity.looks_ok ? `<div class="ai-flags"><span class="ai-flag">⚠ this proposal failed a basic sanity check (BEGIN/END count looks unbalanced, or empty) — review VERY carefully before accepting</span></div>` : ""}
+      ${!sanity.looks_ok ? `<div class="ai-flags"><span class="ai-flag">⚠ this proposal failed a basic sanity check (BEGIN/END count looks unbalanced, or empty) - review VERY carefully before accepting</span></div>` : ""}
       <div class="ai-rec"><span>Approach: ${escapeHtml(result.approach)}</span></div>
       <div id="mergeDiff_${direction}_${findingId}">Loading diff…</div>
       <div class="hint" style="margin-top:8px;">Editable proposed text (edit here if the AI got something wrong, then Accept):</div>
@@ -1254,10 +1388,17 @@ async function setReview(direction, findingId, state) {
 
 async function assembleApply(direction) {
   if (IS_LIVE_SCAN) return;
+  const assembleBtn = document.getElementById(`assembleBtn_${direction}`);
+  setBusy("Assembling apply script…", assembleBtn);
   const includeDeletions = document.getElementById(`includeDeletions_${direction}`).checked;
-  const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/apply`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_deletions: includeDeletions }),
-  });
+  let ok, body;
+  try {
+    ({ ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/apply`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ include_deletions: includeDeletions }),
+    }));
+  } finally {
+    clearBusy(assembleBtn);
+  }
   const out = document.getElementById(`applyOut_${direction}`);
   const copyBtn = document.getElementById(`copyApplyBtn_${direction}`);
   const applyClientBtn = document.getElementById(`applyClientBtn_${direction}`);
@@ -1269,7 +1410,7 @@ async function assembleApply(direction) {
   }
   out.innerHTML = `
     <div class="noise">${body.manifest.included.length} statement(s) included, ${body.manifest.manual_review.length} need manual review.
-    ${direction === "105_to_client" ? "Script targets the <b>client</b> database only." : "Review direction before applying — never run client scripts against 105 without intent."}</div>
+    ${direction === "105_to_client" ? "Script targets the <b>client</b> database only." : "Review direction before applying - never run client scripts against 105 without intent."}</div>
     <pre>${escapeHtml(body.script)}</pre>
     ${body.manifest.manual_review.length ? "<b>Manual review needed:</b><pre>" +
       escapeHtml(JSON.stringify(body.manifest.manual_review, null, 1)) + "</pre>" : ""}
@@ -1278,6 +1419,7 @@ async function assembleApply(direction) {
   if (applyClientBtn && direction === "105_to_client" && !IS_LIVE_SCAN) {
     applyClientBtn.style.display = "inline-block";
   }
+  updateConnFieldGates();
 }
 
 function hideApplyErrorModal() {
@@ -1325,7 +1467,7 @@ async function startInteractiveApply(direction) {
   }
   if (!confirm("Apply the assembled script to the live CLIENT database? 105 is never modified. Errors will pause for your decision.")) return;
   const applyBtn = document.getElementById(`applyClientBtn_${direction}`);
-  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Applying…"; }
+  setBusy("Applying to client…", applyBtn);
   try {
     const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/apply_start`, {
       method: "POST",
@@ -1339,7 +1481,8 @@ async function startInteractiveApply(direction) {
     }
     await handleApplyInteractivePayload(direction, body);
   } finally {
-    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = "Apply to client (interactive)"; }
+    clearBusy(applyBtn);
+    updateConnFieldGates();
   }
 }
 
@@ -1472,6 +1615,7 @@ function updateCompareModeUi() {
     el.style.display = IS_LIVE_SCAN ? "block" : "none";
   });
   document.querySelectorAll("[id^=assembleBtn_]").forEach(btn => { btn.disabled = IS_LIVE_SCAN; });
+  updateConnFieldGates();
 }
 
 function liveMasterConnPayload() {
@@ -1551,83 +1695,131 @@ document.getElementById("pkFkChip")?.addEventListener("click", () => {
 });
 
 document.getElementById("datacopyLoadTables")?.addEventListener("click", async () => {
-  const { ok, body } = await getJSON("/api/datacopy/tables", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(datacopyBody()),
-  });
-  const el = document.getElementById("datacopyTableList");
-  if (!ok) { if (el) el.textContent = body.error; return; }
-  DATACOPY_TABLES = body.tables || [];
-  if (el) el.innerHTML = DATACOPY_TABLES.map(t =>
-    `<label><input type="checkbox" class="dc-table" value="${escapeHtml(t)}" checked> ${escapeHtml(t)}</label>`).join("");
+  const btn = document.getElementById("datacopyLoadTables");
+  setBusy("Loading config tables…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/datacopy/tables", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datacopyBody()),
+    });
+    const el = document.getElementById("datacopyTableList");
+    if (!ok) { if (el) el.textContent = body.error; return; }
+    DATACOPY_TABLES = body.tables || [];
+    if (el) el.innerHTML = DATACOPY_TABLES.map(t =>
+      `<label><input type="checkbox" class="dc-table" value="${escapeHtml(t)}" checked> ${escapeHtml(t)}</label>`).join("");
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 function selectedDatacopyTables() {
   return [...document.querySelectorAll(".dc-table:checked")].map(cb => cb.value);
 }
 
-document.getElementById("datacopyPreview")?.addEventListener("click", async () => {
-  const tables = selectedDatacopyTables();
-  const { ok, body } = await getJSON("/api/datacopy/preview", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(datacopyBody({ tables })),
-  });
+function setDatacopyOut(text) {
   const out = document.getElementById("datacopyOut");
-  if (!ok) { if (out) out.textContent = body.error; return; }
-  if (out) out.textContent = JSON.stringify(body.tables, null, 2);
+  if (out) out.textContent = text;
+  syncCopyBtnForPre(document.getElementById("datacopyOutCopyBtn"), out);
+}
+
+document.getElementById("datacopyPreview")?.addEventListener("click", async () => {
+  const btn = document.getElementById("datacopyPreview");
+  const tables = selectedDatacopyTables();
+  setBusy("Previewing data copy…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/datacopy/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datacopyBody({ tables })),
+    });
+    if (!ok) { setDatacopyOut(body.error); return; }
+    setDatacopyOut(JSON.stringify(body.tables, null, 2));
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 document.getElementById("datacopySaveScript")?.addEventListener("click", async () => {
+  const btn = document.getElementById("datacopySaveScript");
   const tables = selectedDatacopyTables();
-  const { ok, body } = await getJSON("/api/datacopy/script", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(datacopyBody({ tables, run_id: CURRENT_RUN_ID, direction: ACTIVE_DIRECTION || "105_to_client" })),
-  });
-  const out = document.getElementById("datacopyOut");
-  if (!ok) { if (out) out.textContent = body.error; return; }
-  if (out) out.textContent = body.script;
+  setBusy("Building merge script…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/datacopy/script", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datacopyBody({ tables, run_id: CURRENT_RUN_ID, direction: ACTIVE_DIRECTION || "105_to_client" })),
+    });
+    if (!ok) { setDatacopyOut(body.error); return; }
+    setDatacopyOut(body.script);
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 document.getElementById("datacopyApply")?.addEventListener("click", async () => {
   if (!confirm("Apply data copy to the CLIENT database? This never targets 105.")) return;
+  const btn = document.getElementById("datacopyApply");
   const tables = selectedDatacopyTables();
-  const { ok, body } = await getJSON("/api/datacopy/apply", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(datacopyBody({ tables })),
-  });
-  const out = document.getElementById("datacopyOut");
-  if (!ok) { if (out) out.textContent = body.error || JSON.stringify(body); return; }
-  if (out) out.textContent = JSON.stringify(body, null, 2);
+  setBusy("Applying data copy…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/datacopy/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datacopyBody({ tables })),
+    });
+    if (!ok) { setDatacopyOut(body.error || JSON.stringify(body)); return; }
+    setDatacopyOut(JSON.stringify(body, null, 2));
+  } finally {
+    clearBusy(btn);
+  }
 });
 
-document.getElementById("webPreviewBtn")?.addEventListener("click", async () => {
-  const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
-  const { ok, body } = await getJSON("/api/webdeploy/preview", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
+function setWebOut(text) {
   const out = document.getElementById("webOut");
-  if (!ok) { if (out) out.textContent = body.error; return; }
-  if (out) out.textContent = JSON.stringify(body, null, 2);
+  if (out) out.textContent = text;
+  syncCopyBtnForPre(document.getElementById("webOutCopyBtn"), out);
+}
+
+document.getElementById("webPreviewBtn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("webPreviewBtn");
+  const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
+  setBusy("Previewing web manifest…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/webdeploy/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!ok) { setWebOut(body.error); return; }
+    setWebOut(JSON.stringify(body, null, 2));
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 document.getElementById("webScriptBtn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("webScriptBtn");
   const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
-  const { ok, body } = await getJSON("/api/webdeploy/script", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
-  const out = document.getElementById("webOut");
-  if (!ok) { if (out) out.textContent = body.error; return; }
-  if (out) out.textContent = body.script;
+  setBusy("Building robocopy script…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/webdeploy/script", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!ok) { setWebOut(body.error); return; }
+    setWebOut(body.script);
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 document.getElementById("webApplyBtn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("webApplyBtn");
   const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
-  const { ok, body } = await getJSON("/api/webdeploy/apply", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-  });
-  const out = document.getElementById("webOut");
-  if (!ok) { if (out) out.textContent = body.error; return; }
-  if (out) out.textContent = JSON.stringify(body, null, 2);
+  setBusy("Applying web staging copy…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/webdeploy/apply", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!ok) { setWebOut(body.error); return; }
+    setWebOut(JSON.stringify(body, null, 2));
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 document.getElementById("pkgSaveProfile")?.addEventListener("click", async () => {
@@ -1669,21 +1861,43 @@ document.getElementById("pkgDownloadZip")?.addEventListener("click", () => {
 });
 
 document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
-  const r = await fetch("/api/trim", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      definition: document.getElementById("trimSource").value,
-      client_active_id: document.getElementById("trimClientId").value
-        ? Number(document.getElementById("trimClientId").value)
-        : null,
-    }),
-  });
-  const data = await r.json();
-  document.getElementById("trimOut").textContent = data.ok ? data.trimmed_sql : (data.reason || "failed");
-  document.getElementById("trimUnknown").hidden = !data.unknown_kept;
-  document.getElementById("trimHarvest").textContent =
-    (data.harvest || []).map(h => `${h.kind || ""} ${h.condition || ""}\n${h.body || ""}`).join("\n---\n");
+  const btn = document.getElementById("trimRunBtn");
+  const source = document.getElementById("trimSource").value;
+  const split = document.getElementById("trimSplit");
+  const trimOut = document.getElementById("trimOut");
+  const trimOriginal = document.getElementById("trimOriginal");
+  const trimHarvest = document.getElementById("trimHarvest");
+  setBusy("Trimming this client…", btn);
+  try {
+    const r = await fetch("/api/trim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        definition: source,
+        client_active_id: document.getElementById("trimClientId").value
+          ? Number(document.getElementById("trimClientId").value)
+          : null,
+      }),
+    });
+    const data = await r.json();
+    if (split) split.hidden = false;
+    if (data.ok) {
+      const lines = classifyTrimSourceLines(source, data.trimmed_sql, data.harvest);
+      if (trimOriginal) trimOriginal.innerHTML = renderTrimOriginalAnnotated(lines);
+      if (trimOut) trimOut.textContent = data.trimmed_sql;
+      const harvestText = (data.harvest || []).map(h => `${h.kind || ""} ${h.condition || ""}\n${h.body || ""}`).join("\n---\n");
+      if (trimHarvest) trimHarvest.textContent = harvestText || HARVEST_EMPTY_COPY;
+    } else {
+      if (trimOriginal) trimOriginal.innerHTML = "";
+      if (trimOut) trimOut.textContent = data.reason || "failed";
+      if (trimHarvest) trimHarvest.textContent = HARVEST_EMPTY_COPY;
+    }
+    document.getElementById("trimUnknown").hidden = !data.unknown_kept;
+    syncCopyBtnForPre(document.getElementById("trimOutCopyBtn"), trimOut);
+    syncCopyBtnForPre(document.getElementById("trimHarvestCopyBtn"), trimHarvest, HARVEST_EMPTY_COPY);
+  } finally {
+    clearBusy(btn);
+  }
 });
 
 function driftProcFindings(direction) {
@@ -1747,18 +1961,24 @@ async function runDriftLens() {
   const warn = document.getElementById("driftWarn");
   preview.textContent = "Loading lens preview…";
   copyBtn.disabled = true;
+  setBusy("Loading drift lens…");
 
-  const { ok, body } = await getJSON("/api/proc_lens", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      run_id: CURRENT_RUN_ID,
-      finding_id: findingId,
-      direction,
-      lens,
-      client_active_id: clientActiveId ? Number(clientActiveId) : null,
-    }),
-  });
+  let ok, body;
+  try {
+    ({ ok, body } = await getJSON("/api/proc_lens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run_id: CURRENT_RUN_ID,
+        finding_id: findingId,
+        direction,
+        lens,
+        client_active_id: clientActiveId ? Number(clientActiveId) : null,
+      }),
+    }));
+  } finally {
+    clearBusy();
+  }
   if (!ok) {
     preview.textContent = body.reason || body.error || "proc_lens failed";
     if (meta) meta.textContent = "";
@@ -1773,7 +1993,7 @@ async function runDriftLens() {
   }
   const kindEl = document.getElementById("driftCopyKind");
   if (kindEl) {
-    kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} — paste onto client (${body.copy_side || "client"} CREATE OR ALTER)`;
+    kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} - paste onto client (${body.copy_side || "client"} CREATE OR ALTER)`;
   }
   LAST_DRIFT_COPY_SQL = body.copy_sql || "";
   copyBtn.disabled = !LAST_DRIFT_COPY_SQL || body.copy_kind === "none";
@@ -1782,8 +2002,7 @@ async function runDriftLens() {
 document.getElementById("driftCopyBtn")?.addEventListener("click", async () => {
   if (!LAST_DRIFT_COPY_SQL) return;
   await navigator.clipboard.writeText(LAST_DRIFT_COPY_SQL);
-  const toast = document.getElementById("driftCopyToast");
-  if (toast) { toast.hidden = false; setTimeout(() => { toast.hidden = true; }, 2000); }
+  showCopyToast(document.getElementById("driftCopyToast"));
 });
 
 function renderLiveScanResults(body) {
@@ -1802,7 +2021,7 @@ function renderLiveScanResults(body) {
   ];
   el.style.display = "block";
   el.innerHTML = `
-    <h2>Live scan results <span class="hint">(SCAN_ONLY — routing triage, not apply)</span></h2>
+    <h2>Live scan results <span class="hint">(SCAN_ONLY - routing triage, not apply)</span></h2>
     <div class="cards">
       <div class="card"><div class="n">${sum.missing_in_b ?? c.missing_in_b?.length ?? 0}</div><div class="l">Missing on client</div></div>
       <div class="card"><div class="n">${sum.extra_in_b ?? c.extra_in_b?.length ?? 0}</div><div class="l">Extra on client</div></div>
@@ -1825,23 +2044,37 @@ document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
   updateCompareModeUi();
   syncDriftFromRun();
   const btn = document.getElementById("liveScanBtn");
-  btn.disabled = true;
-  btn.textContent = "Scanning…";
-  const { ok, body } = await getJSON("/api/livescan", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  btn.disabled = false;
-  btn.textContent = "Run live scan";
-  if (!ok) {
-    document.getElementById("liveResults").style.display = "block";
-    document.getElementById("liveResults").innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`;
-    return;
+  setBusy("Running live scan…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/livescan", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!ok) {
+      document.getElementById("liveResults").style.display = "block";
+      document.getElementById("liveResults").innerHTML = `<div class="log-err">${escapeHtml(body.error)}</div>`;
+      return;
+    }
+    renderLiveScanResults(body);
+  } finally {
+    clearBusy(btn);
+    updateConnFieldGates();
   }
-  renderLiveScanResults(body);
 });
 
 /* ============================== Init ============================== */
+
+[
+  "liveMasterServer", "liveMasterDb", "liveClientServer", "liveClientDb",
+  "applyTargetServer", "applyTargetDb",
+].forEach(id => {
+  document.getElementById(id)?.addEventListener("input", updateConnFieldGates);
+});
+
+wireCopyButton("trimOutCopyBtn", "trimOut", "trimOutCopyToast");
+wireCopyButton("trimHarvestCopyBtn", "trimHarvest", "trimHarvestCopyToast", HARVEST_EMPTY_COPY);
+wireCopyButton("datacopyOutCopyBtn", "datacopyOut", "datacopyCopyToast");
+wireCopyButton("webOutCopyBtn", "webOut", "webOutCopyToast");
 
 switchTool("trimmer");
 switchCompareSubtab("schema");

@@ -49,8 +49,8 @@ classify ──► review (exact diffs) ──► approve ──► package ─�
 
 Start it:
 ```bash
-cd apps/drift-tool && python3.13 desktop.py    # desktop window
-# or: python3.13 app.py                        # browser at http://127.0.0.1:5000
+cd apps/drift-tool && ./run-desktop.sh    # desktop window
+# or: python3.13 app.py                     # browser at http://127.0.0.1:5057
 ```
 
 ## 2. Compare a client to 105

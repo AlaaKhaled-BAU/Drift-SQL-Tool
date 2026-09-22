@@ -23,11 +23,45 @@ class TestCompareSubtabs(unittest.TestCase):
         self._tmpdir = Path("/tmp/drift-compare-subtabs")
         self._tmpdir.mkdir(parents=True, exist_ok=True)
 
+    def test_buttons_do_not_move_on_press(self):
+        css = (Path(__file__).resolve().parent.parent / "static" / "style.css").read_text()
+        start = css.index("button {")
+        chunk = css[start:start + 700]
+        self.assertNotIn("filter:", chunk)
+        self.assertNotIn("transform:", chunk)
+
     def test_index_tab_titles(self):
         html = self.client.get("/").data.decode("utf-8")
         for tid in ("toolTabTrimmer", "toolTabCompare", "toolTabDrift"):
             self.assertIn(f'id="{tid}"', html)
             self.assertIn("title=", html.split(tid)[1][:400])
+
+    def test_trimmer_work_bar_and_split_markup(self):
+        html = self.client.get("/").data.decode("utf-8")
+        self.assertIn('id="workBar"', html)
+        self.assertIn('id="trimSplit"', html)
+        self.assertIn('id="trimOriginal"', html)
+        self.assertIn('id="trimOut"', html)
+        self.assertIn('id="trimHarvest"', html)
+
+    def test_copy_buttons_in_index(self):
+        html = self.client.get("/").data.decode("utf-8")
+        for bid in (
+            "trimOutCopyBtn",
+            "trimHarvestCopyBtn",
+            "datacopyOutCopyBtn",
+            "webOutCopyBtn",
+            "driftCopyBtn",
+        ):
+            self.assertIn(f'id="{bid}"', html)
+
+    def test_apply_target_hint_has_no_localhost(self):
+        html = self.client.get("/").data.decode("utf-8")
+        start = html.index('id="applyTargetDetails"')
+        chunk = html[start:start + 1200]
+        self.assertNotIn("127.0.0.1", chunk)
+        self.assertNotIn("14330", chunk)
+        self.assertIn('id="applyConnStatus"', chunk)
 
     def test_backfill_then_assemble_update(self):
         from drift import scriptgen
