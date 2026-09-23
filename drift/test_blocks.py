@@ -223,7 +223,8 @@ class ScopeResolution(unittest.TestCase):
         r = resolve_scope(_proc(
             "IF @ClientActive = 123\n UPDATE T SET A = 1\nSELECT 2"), 8)
         self.assertTrue(r["ok"], r.get("reason"))
-        joined = "\n".join(r["relevant_blocks"])
+        joined = " ".join("\n".join(r["relevant_blocks"]).split())
+        self.assertIn("UPDATE T SET A = 1", joined)
         self.assertIn("SELECT 2", joined)
 
 
