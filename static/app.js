@@ -28,7 +28,7 @@ let LAST_DRIFT_COPY_SQL = "";
 let APPLY_INTERACTIVE_SESSION = null;
 let APPLY_INTERACTIVE_WAITING = null;
 
-const DIRECTION_LABEL = { client_to_105: "Client → 105", "105_to_client": "105 → Client" };
+const DIRECTION_LABEL = { client_to_105: "Review client extras", "105_to_client": "105 → Client" };
 const ROLE_LABEL = {
   client_to_105: { added: "New on client", modified: "Changed on client", only_on_other: "Only on 105 (client behind)" },
   "105_to_client": { added: "Only on 105 (client missing it)", modified: "Changed", only_on_other: "New on client (not in 105)" },
@@ -136,25 +136,41 @@ function wireCopyButton(btnId, preId, toastId, emptyPlaceholder) {
 
 function liveSideReady(serverId, dbId) {
   const server = document.getElementById(serverId)?.value?.trim();
-  const database = document.getElementById(dbId)?.value?.trim();
+  const dbEl = document.getElementById(dbId);
+  const database = dbEl?.value?.trim() || "";
   return !!(server && database);
 }
 
+function sideMode(role) {
+  return document.querySelector(`input[name="sideMode_${role}"]:checked`)?.value || "live";
+}
+
+function clientApplyTarget() {
+  const c = liveClientConnPayload();
+  return { server: c.server, db: c.database };
+}
+
+function confirmClientApply(scriptName) {
+  const { server, db } = clientApplyTarget();
+  if (!server || !db) {
+    alert("Enter client server and database on the Schema tab.");
+    return false;
+  }
+  const msg = `Apply ${scriptName} to CLIENT ${server}/${db}?\nMaster will not be written.`;
+  return confirm(msg);
+}
+
 function updateConnFieldGates() {
-  const masterOk = liveSideReady("liveMasterServer", "liveMasterDb");
-  const clientOk = liveSideReady("liveClientServer", "liveClientDb");
-  const applyOk = liveSideReady("applyTargetServer", "applyTargetDb");
+  const masterOk = sideMode("master") === "live"
+    ? liveSideReady("liveMasterServer", "db_master")
+    : !!SELECTED_BAK.master;
+  const clientOk = sideMode("client") === "live"
+    ? liveSideReady("liveClientServer", "db_client")
+    : !!SELECTED_BAK.client;
   const liveReady = masterOk && clientOk;
+  const applyOk = liveSideReady("liveClientServer", "db_client");
   const status = document.getElementById("liveConnStatus");
-  if (status) {
-    status.textContent = liveReady ? "" : "Enter server and database.";
-  }
-  const applyStatus = document.getElementById("applyConnStatus");
-  if (applyStatus) {
-    applyStatus.textContent = applyOk ? "" : "Enter server and database.";
-  }
-  const liveScanBtn = document.getElementById("liveScanBtn");
-  if (liveScanBtn) liveScanBtn.disabled = !liveReady;
+  if (status) status.textContent = liveReady ? "" : "";
   ["datacopyLoadTables", "datacopyPreview", "datacopySaveScript", "datacopyApply"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = !liveReady;
@@ -313,8 +329,9 @@ async function ubProbeExecReport(direction) {
 /* ============================== Run list (rail) ============================== */
 
 async function loadRunList() {
-  const { body } = await getJSON("/api/runs");
   const el = document.getElementById("runList");
+  if (!el) return;
+  const { body } = await getJSON("/api/runs");
   if (!body.length) { el.innerHTML = `<div class="rail-empty">No runs yet.</div>`; return; }
   el.innerHTML = body.map(r => {
     const c105 = r.counts.client_to_105, c105c = r.counts["105_to_client"];
@@ -337,7 +354,8 @@ async function loadRun(runId) {
   switchCompareSubtab("schema");
   document.getElementById("pickerSection").style.display = "none";
   document.getElementById("logSection").style.display = "none";
-  document.getElementById("liveResults").style.display = "none";
+  const liveRes = document.getElementById("liveResults");
+  if (liveRes) liveRes.style.display = "none";
   document.querySelectorAll(".run-item").forEach(el => el.classList.toggle("active", el.dataset.run === runId));
   renderResults(body.run_id, body.meta, body.workspaces);
   syncDriftFromRun();
@@ -348,73 +366,136 @@ document.getElementById("newRunBtn").addEventListener("click", () => {
   IS_LIVE_SCAN = false;
   document.getElementById("pickerSection").style.display = "block";
   document.getElementById("results").style.display = "none";
-  document.getElementById("liveResults").style.display = "none";
+  document.getElementById("liveResults")?.style && (document.getElementById("liveResults").style.display = "none");
   document.querySelectorAll(".run-item").forEach(el => el.classList.remove("active"));
   CURRENT_RUN_ID = null;
   updateCompareModeUi();
   syncDriftFromRun();
 });
 
-/* ============================== Picker ============================== */
+/* ============================== Picker (live | bak) ============================== */
 
-const SELECTED_PATH = { master: null, client: null };
-const BROWSE_STATE = { master: "", client: "" };
+const SELECTED_BAK = { master: null, client: null };
 
-document.querySelectorAll(".picker-slot").forEach(slot => {
-  const role = slot.dataset.role;
-  slot.querySelectorAll(".picker-tab").forEach(tab => tab.addEventListener("click", () => {
-    slot.querySelectorAll(".picker-tab").forEach(t => t.classList.toggle("active", t === tab));
-    slot.querySelector(".picker-recent").style.display = tab.dataset.mode === "recent" ? "block" : "none";
-    slot.querySelector(".picker-browse").style.display = tab.dataset.mode === "browse" ? "block" : "none";
-    if (tab.dataset.mode === "browse") browseTo(role, BROWSE_STATE[role]);
-  }));
-  slot.querySelector(`#recent_${role}`).addEventListener("change", e => {
-    if (e.target.value) selectFile(role, e.target.value, e.target.selectedOptions[0].textContent.trim());
+function liveConnectFields(role) {
+  const prefix = role === "master" ? "liveMaster" : "liveClient";
+  const portRaw = document.getElementById(`${prefix}Port`)?.value?.trim();
+  const dbSel = document.getElementById(role === "master" ? "db_master" : "db_client");
+  return {
+    server: document.getElementById(`${prefix}Server`)?.value?.trim() || "",
+    port: portRaw ? Number(portRaw) : 1433,
+    user: document.getElementById(`${prefix}User`)?.value?.trim() || "",
+    password: document.getElementById(`${prefix}Pass`)?.value || "",
+    database: dbSel?.value?.trim() || "",
+  };
+}
+
+function wireSideMode(role) {
+  document.querySelectorAll(`input[name="sideMode_${role}"]`).forEach(radio => {
+    radio.addEventListener("change", () => {
+      const live = sideMode(role) === "live";
+      const livePane = document.getElementById(`livePane_${role}`);
+      const bakPane = document.getElementById(`bakPane_${role}`);
+      if (livePane) livePane.hidden = !live;
+      if (bakPane) bakPane.hidden = live;
+      updateConnFieldGates();
+    });
   });
+}
+
+async function connectLive(role) {
+  const status = document.getElementById(`connectStatus_${role}`);
+  const dbSel = document.getElementById(role === "master" ? "db_master" : "db_client");
+  const fields = liveConnectFields(role);
+  if (!fields.server) {
+    if (status) status.textContent = "Enter server.";
+    return;
+  }
+  if (status) status.textContent = "Connecting…";
+  let ok, body;
+  try {
+    ({ ok, body } = await getJSON("/api/live/databases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        server: fields.server,
+        port: fields.port,
+        user: fields.user,
+        password: fields.password,
+      }),
+    }));
+  } catch (err) {
+    if (status) status.textContent = String(err);
+    return;
+  }
+  if (!ok) {
+    if (status) status.textContent = body.error || "Connect failed";
+    if (dbSel) dbSel.innerHTML = `<option value="">Database…</option>`;
+    return;
+  }
+  const names = body.databases || [];
+  if (dbSel) {
+    const prev = fields.database;
+    dbSel.innerHTML = `<option value="">Database…</option>` +
+      names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+    if (prev && names.includes(prev)) dbSel.value = prev;
+  }
+  if (status) status.textContent = names.length ? `${names.length} database(s)` : "No user databases found.";
+  updateConnFieldGates();
+}
+
+async function pickBakFile(role) {
+  const hint = document.getElementById(`bakDesktopHint_${role}`);
+  const pathEl = document.getElementById(`bakPath_${role}`);
+  let resp;
+  try {
+    resp = await fetch("/api/desktop/open_bak", { method: "POST" });
+  } catch (err) {
+    if (hint) hint.hidden = false;
+    if (pathEl) pathEl.textContent = String(err);
+    return;
+  }
+  const body = await resp.json();
+  if (resp.status === 501) {
+    if (hint) { hint.hidden = false; hint.textContent = "use the desktop app"; }
+    return;
+  }
+  if (!resp.ok || !body.path) {
+    if (pathEl) pathEl.textContent = body.error || "No file selected";
+    return;
+  }
+  SELECTED_BAK[role] = body.path;
+  if (pathEl) pathEl.textContent = body.path;
+  if (hint) hint.hidden = true;
+  updateConnFieldGates();
+}
+
+function buildSideSpec(role) {
+  if (sideMode(role) === "bak") {
+    const path = SELECTED_BAK[role];
+    return path ? { kind: "bak", path } : null;
+  }
+  const p = liveConnectFields(role);
+  if (!p.server || !p.database) return null;
+  return {
+    kind: "live",
+    server: p.server,
+    port: p.port,
+    database: p.database,
+    user: p.user,
+    password: p.password,
+  };
+}
+
+["master", "client"].forEach(wireSideMode);
+document.getElementById("connectMaster")?.addEventListener("click", () => connectLive("master"));
+document.getElementById("connectClient")?.addEventListener("click", () => connectLive("client"));
+document.getElementById("pickBak_master")?.addEventListener("click", () => pickBakFile("master"));
+document.getElementById("pickBak_client")?.addEventListener("click", () => pickBakFile("client"));
+["db_master", "db_client", "liveMasterServer", "liveClientServer", "liveMasterPort", "liveClientPort"].forEach(id => {
+  document.getElementById(id)?.addEventListener("change", updateConnFieldGates);
+  document.getElementById(id)?.addEventListener("input", updateConnFieldGates);
 });
-
-async function browseTo(role, path) {
-  BROWSE_STATE[role] = path;
-  const slot = document.getElementById(`slot_${role}`);
-  const crumbEl = slot.querySelector(".browse-crumb");
-  const listEl = slot.querySelector(".browse-list");
-  listEl.innerHTML = `<div class="browse-empty">Loading…</div>`;
-
-  const { ok, body } = await getJSON(`/api/browse?path=${encodeURIComponent(path)}`);
-  if (!ok) { listEl.innerHTML = `<div class="browse-empty">${escapeHtml(body.error)}</div>`; return; }
-
-  const parts = body.cwd ? body.cwd.split("/") : [];
-  let acc = "";
-  const crumbs = [`<span class="seg" data-p="">device root</span>`];
-  parts.forEach(part => { acc = acc ? `${acc}/${part}` : part; crumbs.push(`<span class="seg" data-p="${escapeHtml(acc)}">${escapeHtml(part)}</span>`); });
-  crumbEl.innerHTML = crumbs.join(" / ");
-  crumbEl.querySelectorAll(".seg").forEach(seg => seg.addEventListener("click", () => browseTo(role, seg.dataset.p)));
-
-  const rows = [];
-  if (body.parent !== null) rows.push(`<div class="browse-row" data-nav="${escapeHtml(body.parent)}"><span class="ic">↰</span><span class="nm">.. (up)</span></div>`);
-  body.dirs.forEach(d => {
-    const p = body.cwd ? `${body.cwd}/${d}` : d;
-    rows.push(`<div class="browse-row" data-nav="${escapeHtml(p)}"><span class="ic">📁</span><span class="nm">${escapeHtml(d)}</span></div>`);
-  });
-  body.baks.forEach(b => {
-    rows.push(`<div class="browse-row bak" data-select="${escapeHtml(b.abs_path)}" data-label="${escapeHtml(b.name)} (${b.size_mb} MB)">
-      <span class="ic">◇</span><span class="nm">${escapeHtml(b.name)}</span><span class="sz">${b.size_mb} MB</span></div>`);
-  });
-  listEl.innerHTML = rows.join("") || `<div class="browse-empty">No subfolders or .bak files here.</div>`;
-  listEl.querySelectorAll("[data-nav]").forEach(r => r.addEventListener("click", () => browseTo(role, r.dataset.nav)));
-  listEl.querySelectorAll("[data-select]").forEach(r => r.addEventListener("click", () => selectFile(role, r.dataset.select, r.dataset.label)));
-}
-
-function selectFile(role, path, label) {
-  SELECTED_PATH[role] = path;
-  const slot = document.getElementById(`slot_${role}`);
-  const chip = slot.querySelector(".selected-chip");
-  chip.style.display = "flex";
-  chip.innerHTML = `<span>✓</span><span>${escapeHtml(label)}</span><span class="x" data-clear>✕</span>`;
-  chip.querySelector("[data-clear]").addEventListener("click", (e) => {
-    e.stopPropagation(); SELECTED_PATH[role] = null; chip.style.display = "none";
-  });
-}
 
 /* ============================== Run a comparison ============================== */
 
@@ -427,12 +508,15 @@ function appendLog(text, isErr) {
 }
 
 goBtn.addEventListener("click", async () => {
-  const master = SELECTED_PATH.master;
-  const client = SELECTED_PATH.client;
+  const master_side = buildSideSpec("master");
+  const client_side = buildSideSpec("client");
   const directions = [];
   if (document.getElementById("dirC105").checked) directions.push("client_to_105");
   if (document.getElementById("dir105C").checked) directions.push("105_to_client");
-  if (!master || !client) { alert("Pick both a Master (105) and a Client backup file."); return; }
+  if (!master_side || !client_side) {
+    alert("Configure both Master (105) and Client (live Connect + database, or a .bak path).");
+    return;
+  }
   if (!directions.length) { alert("Pick at least one direction."); return; }
 
   // D5a: all-checked is sent as null (no filter, a clean full run) rather
@@ -450,14 +534,15 @@ goBtn.addEventListener("click", async () => {
   logEl.innerHTML = "";
   document.getElementById("logSection").style.display = "block";
   document.getElementById("results").style.display = "none";
-  document.getElementById("liveResults").style.display = "none";
   setBusy("Comparing…", goBtn);
 
   let ok, body;
   try {
     ({ ok, body } = await getJSON("/api/compare", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ master, client, directions, type_filter: typeFilter, client_active_id: clientActiveId }),
+      body: JSON.stringify({
+        master_side, client_side, directions, type_filter: typeFilter, client_active_id: clientActiveId,
+      }),
     }));
   } catch (err) {
     appendLog("ERROR: " + (err && err.message ? err.message : err), true);
@@ -700,14 +785,16 @@ function renderWorkspace(direction) {
     <div class="pagination" id="pagination_${direction}"></div>
     <div id="detail_${direction}"></div>
     <section>
-      <h2>Assemble apply script (approved findings only, additive)</h2>
+      <h2>${direction === "client_to_105" ? "Review client extras script (download only)" : "Assemble apply script (approved findings only, additive)"}</h2>
       <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:12.5px;">
         <input type="checkbox" id="includeDeletions_${direction}"> include deletions (off by default - never drops the other side's objects unless checked)
       </label>
       <button class="ghost sm" id="assembleBtn_${direction}" style="margin-left:10px;">Assemble</button>
       <button class="ghost sm" id="rehearseBtn_${direction}" style="margin-left:6px;">Rehearse</button>
       <button class="ghost sm" id="copyApplyBtn_${direction}" style="margin-left:6px;display:none;">Copy script</button>
-      ${direction === "105_to_client" ? `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>` : ""}
+      ${direction === "client_to_105"
+    ? `<a class="ghost sm" id="extrasDownload_${direction}" href="#" hidden download="review_client_extras.sql">Download review_client_extras.sql</a>`
+    : `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>`}
       <div id="rehearseResidue_${direction}" class="hint"></div>
       <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled - live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
       <div id="applyOut_${direction}"></div>
@@ -1419,6 +1506,13 @@ async function assembleApply(direction) {
   if (applyClientBtn && direction === "105_to_client" && !IS_LIVE_SCAN) {
     applyClientBtn.style.display = "inline-block";
   }
+  if (direction === "client_to_105" && CURRENT_RUN_ID) {
+    const dl = document.getElementById(`extrasDownload_${direction}`);
+    if (dl) {
+      dl.href = `/api/run/${CURRENT_RUN_ID}/file?path=${encodeURIComponent("client_to_105/apply/review_client_extras.sql")}`;
+      dl.hidden = false;
+    }
+  }
   updateConnFieldGates();
 }
 
@@ -1461,11 +1555,7 @@ async function handleApplyInteractivePayload(direction, payload) {
 async function startInteractiveApply(direction) {
   if (IS_LIVE_SCAN || !CURRENT_RUN_ID || direction !== "105_to_client") return;
   const client = liveClientConnPayload();
-  if (!client.server || !client.database) {
-    alert("Enter the client SQL Server (server + database) under “Client SQL connection” or Live servers.");
-    return;
-  }
-  if (!confirm("Apply the assembled script to the live CLIENT database? 105 is never modified. Errors will pause for your decision.")) return;
+  if (!confirmClientApply("the assembled schema script")) return;
   const applyBtn = document.getElementById(`applyClientBtn_${direction}`);
   setBusy("Applying to client…", applyBtn);
   try {
@@ -1596,8 +1686,6 @@ function switchCompareSubtab(sub) {
   document.querySelectorAll(".compare-subpane").forEach(pane => {
     pane.hidden = pane.dataset.compareSub !== sub;
   });
-  const shared = document.getElementById("sharedLiveConn");
-  if (shared) shared.hidden = !(sub === "livescan" || sub === "datacopy");
   if (sub === "schema") {
     IS_LIVE_SCAN = false;
     syncDriftFromRun();
@@ -1619,31 +1707,24 @@ function updateCompareModeUi() {
 }
 
 function liveMasterConnPayload() {
+  const p = liveConnectFields("master");
   return {
-    server: document.getElementById("liveMasterServer")?.value?.trim() || "",
-    database: document.getElementById("liveMasterDb")?.value?.trim() || "",
-    user: document.getElementById("liveMasterUser")?.value?.trim() || "",
-    password: document.getElementById("liveMasterPass")?.value || "",
+    server: p.server,
+    port: p.port,
+    database: p.database,
+    user: p.user,
+    password: p.password,
   };
 }
 
 function liveClientConnPayload() {
-  const applyServer = document.getElementById("applyTargetServer")?.value?.trim();
-  if (applyServer && ACTIVE_COMPARE_SUBTAB === "schema") {
-    const portRaw = document.getElementById("applyTargetPort")?.value?.trim();
-    return {
-      server: applyServer,
-      port: portRaw ? Number(portRaw) : undefined,
-      database: document.getElementById("applyTargetDb")?.value?.trim() || "",
-      user: document.getElementById("applyTargetUser")?.value?.trim() || "",
-      password: document.getElementById("applyTargetPass")?.value || "",
-    };
-  }
+  const p = liveConnectFields("client");
   return {
-    server: document.getElementById("liveClientServer")?.value?.trim() || "",
-    database: document.getElementById("liveClientDb")?.value?.trim() || "",
-    user: document.getElementById("liveClientUser")?.value?.trim() || "",
-    password: document.getElementById("liveClientPass")?.value || "",
+    server: p.server,
+    port: p.port,
+    database: p.database,
+    user: p.user,
+    password: p.password,
   };
 }
 
@@ -1755,7 +1836,7 @@ document.getElementById("datacopySaveScript")?.addEventListener("click", async (
 });
 
 document.getElementById("datacopyApply")?.addEventListener("click", async () => {
-  if (!confirm("Apply data copy to the CLIENT database? This never targets 105.")) return;
+  if (!confirmClientApply("data copy")) return;
   const btn = document.getElementById("datacopyApply");
   const tables = selectedDatacopyTables();
   setBusy("Applying data copy…", btn);
@@ -1808,6 +1889,7 @@ document.getElementById("webScriptBtn")?.addEventListener("click", async () => {
 });
 
 document.getElementById("webApplyBtn")?.addEventListener("click", async () => {
+  if (!confirmClientApply("web deploy staging copy")) return;
   const btn = document.getElementById("webApplyBtn");
   const payload = { src_root: document.getElementById("webSrcRoot").value, dst_root: document.getElementById("webDstRoot").value };
   setBusy("Applying web staging copy…", btn);
@@ -1825,14 +1907,14 @@ document.getElementById("webApplyBtn")?.addEventListener("click", async () => {
 document.getElementById("pkgSaveProfile")?.addEventListener("click", async () => {
   const name = document.getElementById("pkgProfileName")?.value?.trim();
   if (!name) return;
-  const masterSel = document.getElementById("recent_master");
-  const clientSel = document.getElementById("recent_client");
+  const masterSide = buildSideSpec("master");
+  const clientSide = buildSideSpec("client");
   const { ok, body } = await getJSON("/api/profiles", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name,
-      master_path: masterSel?.value || "",
-      client_path: clientSel?.value || "",
+      master_path: masterSide?.kind === "bak" ? masterSide.path : "",
+      client_path: clientSide?.kind === "bak" ? clientSide.path : "",
       client_active_id: document.getElementById("compareClientActiveId")?.value || null,
       master_live: liveMasterConnPayload(),
       client_live: liveClientConnPayload(),
@@ -2065,11 +2147,72 @@ document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
 /* ============================== Init ============================== */
 
 [
-  "liveMasterServer", "liveMasterDb", "liveClientServer", "liveClientDb",
-  "applyTargetServer", "applyTargetDb",
+  "liveMasterServer", "liveClientServer", "liveMasterUser", "liveClientUser",
 ].forEach(id => {
   document.getElementById(id)?.addEventListener("input", updateConnFieldGates);
 });
+
+let LAST_PAIR_COPY_SQL = "";
+
+function switchTrimSubtab(sub) {
+  document.querySelectorAll(".trim-subtab").forEach(btn => {
+    const on = btn.dataset.trimSub === sub;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("#trimSinglePane, #trimPairPane").forEach(pane => {
+    pane.hidden = pane.dataset.trimSub !== sub;
+  });
+}
+
+document.querySelectorAll(".trim-subtab").forEach(btn =>
+  btn.addEventListener("click", () => switchTrimSubtab(btn.dataset.trimSub)));
+
+document.getElementById("pairRunBtn")?.addEventListener("click", async () => {
+  const btn = document.getElementById("pairRunBtn");
+  const lens = document.querySelector('input[name="pairLens"]:checked')?.value || "full";
+  const clientActiveId = document.getElementById("pairClientActiveId")?.value;
+  const left_def = document.getElementById("pairMaster")?.value || "";
+  const right_def = document.getElementById("pairClient")?.value || "";
+  const preview = document.getElementById("pairPreview");
+  const copyBtn = document.getElementById("pairCopyBtn");
+  setBusy("Comparing pair…", btn);
+  try {
+    const { ok, body } = await getJSON("/api/proc_lens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        left_def,
+        right_def,
+        lens,
+        client_active_id: clientActiveId ? Number(clientActiveId) : null,
+        direction: "105_to_client",
+      }),
+    });
+    if (!ok) {
+      if (preview) preview.textContent = body.reason || body.error || "proc_lens failed";
+      LAST_PAIR_COPY_SQL = "";
+      if (copyBtn) copyBtn.disabled = true;
+      return;
+    }
+    const show = body.diff_unified || body.preview_right || body.preview_left || "(no diff text)";
+    if (preview) preview.textContent = show;
+    const kindEl = document.getElementById("pairCopyKind");
+    if (kindEl) kindEl.textContent = body.copy_sql ? `copy_kind: ${body.copy_kind || "alter"}` : "";
+    LAST_PAIR_COPY_SQL = body.copy_sql || "";
+    if (copyBtn) copyBtn.disabled = !LAST_PAIR_COPY_SQL || body.copy_kind === "none";
+  } finally {
+    clearBusy(btn);
+  }
+});
+
+document.getElementById("pairCopyBtn")?.addEventListener("click", async () => {
+  if (!LAST_PAIR_COPY_SQL) return;
+  await navigator.clipboard.writeText(LAST_PAIR_COPY_SQL);
+  showCopyToast(document.getElementById("pairCopyToast"));
+});
+
+switchTrimSubtab("trim");
 
 wireCopyButton("trimOutCopyBtn", "trimOut", "trimOutCopyToast");
 wireCopyButton("trimHarvestCopyBtn", "trimHarvest", "trimHarvestCopyToast", HARVEST_EMPTY_COPY);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Drift Tool — Desktop wrapper (Flask + pywebview)."""
+"""Drift Tool — Desktop wrapper (Flask + pywebview + GTK .bak picker)."""
 import os
+import queue
 import sys
 import threading
 import time
@@ -10,13 +11,81 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 LOG = os.path.join(os.path.expanduser("~"), ".drift-tool-desktop.log")
 
+CHOOSER_ENABLED = False
+_CHOOSER_LOCK = threading.Lock()
+_RESULT_QUEUE: queue.Queue | None = None
+
+
 def log(m):
     with open(LOG, "a") as f:
         f.write(f"{time.strftime('%H:%M:%S')} {m}\n")
 
+
+def chooser_available() -> bool:
+    return CHOOSER_ENABLED
+
+
+def _has_display() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def _run_dialog_on_gtk_main() -> str | None:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+
+    dialog = Gtk.FileChooserNative(
+        title="Select SQL Server backup",
+        action=Gtk.FileChooserAction.OPEN,
+        modal=True,
+    )
+    filt = Gtk.FileFilter()
+    filt.set_name("SQL Server backups (*.bak)")
+    filt.add_pattern("*.bak")
+    dialog.add_filter(filt)
+    resp = dialog.run()
+    path = None
+    if resp == Gtk.ResponseType.ACCEPT:
+        path = dialog.get_filename()
+    dialog.destroy()
+    return path
+
+
+def pick_bak_blocking(timeout: float = 300.0) -> str | None:
+    """Block until the user picks a .bak file (GTK main thread). Desktop only."""
+    if not CHOOSER_ENABLED or not _has_display():
+        return None
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib
+
+    result_q: queue.Queue = queue.Queue(maxsize=1)
+
+    def _idle():
+        try:
+            result_q.put(_run_dialog_on_gtk_main())
+        except Exception:
+            result_q.put(None)
+        return False
+
+    with _CHOOSER_LOCK:
+        GLib.idle_add(_idle)
+        try:
+            return result_q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
+def enable_desktop_chooser():
+    global CHOOSER_ENABLED
+    CHOOSER_ENABLED = True
+
+
 log("started")
-log(f"DISPLAY={os.environ.get('DISPLAY','(unset)')}")
-log(f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY','(unset)')}")
+log(f"DISPLAY={os.environ.get('DISPLAY', '(unset)')}")
+log(f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '(unset)')}")
 log(f"cwd={os.getcwd()}")
 
 import webview
@@ -25,12 +94,14 @@ from app import app
 HOST = "127.0.0.1"
 PORT = 5057
 
+
 def start_flask():
     log("flask thread starting")
     try:
         app.run(host=HOST, port=PORT, debug=False, threaded=True, use_reloader=False)
     except Exception as e:
         log(f"flask error: {e}")
+
 
 def wait_for_flask(timeout=15):
     start = time.time()
@@ -42,7 +113,9 @@ def wait_for_flask(timeout=15):
             time.sleep(0.3)
     return False
 
+
 if __name__ == "__main__":
+    enable_desktop_chooser()
     t = threading.Thread(target=start_flask, daemon=True)
     t.start()
     if not wait_for_flask():
@@ -53,7 +126,8 @@ if __name__ == "__main__":
         webview.create_window(
             "Drift Tool — DB Schema Compare",
             f"http://{HOST}:{PORT}",
-            width=1280, height=800,
+            width=1280,
+            height=800,
             resizable=True,
         )
         log("window registered, starting GUI loop")

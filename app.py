@@ -233,6 +233,20 @@ def api_trim():
     return jsonify(data), status
 
 
+@app.route("/api/desktop/open_bak", methods=["GET", "POST"])
+def api_desktop_open_bak():
+    try:
+        import desktop
+    except ImportError:
+        return jsonify({"ok": False, "error": "use the desktop app"}), 501
+    if not desktop.chooser_available():
+        return jsonify({"ok": False, "error": "use the desktop app"}), 501
+    path = desktop.pick_bak_blocking()
+    if not path:
+        return jsonify({"ok": False, "error": "cancelled or unavailable"}), 400
+    return jsonify({"ok": True, "path": path})
+
+
 @app.post("/api/proc_lens")
 def api_proc_lens():
     """Compare two captured procedure defs under a drift lens (in-memory only)."""

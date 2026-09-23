@@ -20,14 +20,7 @@
       </div>
     </div>
 
-    <button class="rail-btn active rail-btn-emphasis" id="newRunBtn">
-      <span>＋</span> New comparison
-    </button>
-
-    <div class="rail-section">
-      <div class="rail-title">Past runs</div>
-      <div id="runList"><div class="rail-empty">Loading…</div></div>
-    </div>
+    <button class="rail-btn ghost sm" id="newRunBtn" type="button">New comparison</button>
   </nav>
 
   <main class="main-content">
@@ -50,8 +43,12 @@
 
     <div id="paneTrimmer" class="tool-pane" data-tool="trimmer">
       <h1>Trimmer</h1>
-      <div class="sub">Paste one procedure - see what this <code>@ClientActive</code> actually executes. Harvest lists branches that are not on this client's runtime path (reading view only; copy DDL from SQL Compare or Drift tool).</div>
-      <section class="block trimmer-panel glass-panel">
+      <div class="sub">Trim one procedure for a ClientActive ID, or pair two pasted definitions under a drift lens (client-only copy SQL).</div>
+      <nav class="compare-subtabs tool-tabs" id="trimSubTabs" role="tablist" aria-label="Trimmer views">
+        <button type="button" role="tab" class="tool-tab trim-subtab active" data-trim-sub="trim" aria-selected="true">Trim</button>
+        <button type="button" role="tab" class="tool-tab trim-subtab" data-trim-sub="pair" aria-selected="false">Pair</button>
+      </nav>
+      <section class="block trimmer-panel glass-panel" id="trimSinglePane" data-trim-sub="trim">
         <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
         <textarea id="trimSource" rows="18" class="trim-source" placeholder="Paste CREATE PROCEDURE …"></textarea>
         <button type="button" id="trimRunBtn">Trim to this client</button>
@@ -81,17 +78,34 @@
         </div>
         <pre id="trimHarvest" class="trim-harvest">Branches this client does not run show up here.</pre>
       </section>
+      <section class="block trimmer-panel glass-panel" id="trimPairPane" data-trim-sub="pair" hidden>
+        <div class="trim-pair-grid">
+          <label>Master (105) definition<textarea id="pairMaster" rows="14" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
+          <label>Client definition<textarea id="pairClient" rows="14" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
+        </div>
+        <label class="trim-label">ClientActive ID <input id="pairClientActiveId" type="number" min="1" step="1" placeholder="required for active lenses"></label>
+        <div class="drift-lenses" role="radiogroup" aria-label="Pair lens">
+          <label><input type="radio" name="pairLens" value="full" checked> Full</label>
+          <label><input type="radio" name="pairLens" value="active_read"> ClientActive reads</label>
+          <label><input type="radio" name="pairLens" value="active_plus_else"> ClientActive + ELSE</label>
+        </div>
+        <button type="button" id="pairRunBtn">Compare pair</button>
+        <pre id="pairPreview" class="trim-out"></pre>
+        <div class="drift-copy-row">
+          <span id="pairCopyKind" class="hint"></span>
+          <button type="button" id="pairCopyBtn" class="ghost sm" disabled>Copy ALTER (client only)</button>
+          <span id="pairCopyToast" class="copy-toast" hidden>Copied</span>
+        </div>
+      </section>
     </div>
 
     <div id="paneCompare" class="tool-pane" data-tool="compare" hidden>
       <h1>SQL Compare</h1>
-      <div class="sub">Schema drift from <code>.bak</code> restores, live catalog scan, config-row copy, web files, and client script packages. Procedure-body lenses live on the Drift tool tab (same <code>run_id</code>).</div>
+      <div class="sub">Compare live SQL Server databases or <code>.bak</code> files, review drift, copy config rows, web files, and download client scripts. Master is never written from this tool.</div>
 
       <nav class="compare-subtabs tool-tabs" id="compareSubTabs" role="tablist" aria-label="SQL Compare views">
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip active" data-compare-sub="schema" aria-selected="true" aria-label="Schema"
-          title="Restore two .bak files, review table/column drift, optional backfill, assemble and rehearse a client-targeted script.">Schema</button>
-        <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="livescan" aria-selected="false" aria-label="Live scan"
-          title="Seconds-fast catalog check on two live servers (missing/extra objects, column shape, changed module text). Preview only - no apply.">Live scan</button>
+          title="Connect to live databases or pick .bak files, review table/column drift, assemble client-targeted scripts.">Schema</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="datacopy" aria-selected="false" aria-label="Data copy"
           title="Sync menu / Programs / message / page rows from source to the client (preview counts, then save .sql or apply). Never 105.">Data copy</button>
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip" data-compare-sub="webpages" aria-selected="false" aria-label="Web pages"
@@ -100,68 +114,59 @@
           title="Save named .bak/live bookmarks (no passwords) and download a zip of client-only scripts from this run.">Package</button>
       </nav>
 
-      <div id="sharedLiveConn" class="block" hidden>
-        <p class="hint">Shared live SQL connection (master = source, client = destination). Data copy always writes to <strong>client</strong> only.</p>
-        <div class="live-conn-grid">
-          <fieldset><legend>Master (105) - source</legend>
-            <input id="liveMasterServer" placeholder="server" class="live-in">
-            <input id="liveMasterDb" placeholder="database" class="live-in">
-            <input id="liveMasterUser" placeholder="user" class="live-in">
-            <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-          </fieldset>
-          <fieldset><legend>Client - destination</legend>
-            <input id="liveClientServer" placeholder="server" class="live-in">
-            <input id="liveClientDb" placeholder="database" class="live-in">
-            <input id="liveClientUser" placeholder="user" class="live-in">
-            <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-          </fieldset>
-        </div>
-        <p id="liveConnStatus" class="live-conn-status">Enter server and database.</p>
-      </div>
+      <p id="liveConnStatus" class="live-conn-status" hidden aria-hidden="true"></p>
 
       <div id="compareSubSchema" class="compare-subpane" data-compare-sub="schema">
         <section class="block" id="pickerSection">
           <div class="picker-panel" id="pickerPanelLocal">
             <div class="picker-grid">
               <div class="picker-slot" id="slot_master" data-role="master">
-                <div class="picker-slot-label">Master image (105)</div>
-                <div class="picker-tabs">
-                  <div class="picker-tab active" data-mode="recent">Recent</div>
-                  <div class="picker-tab" data-mode="browse">Browse device</div>
+                <div class="picker-slot-label">Master (105)</div>
+                <div class="side-mode-toggle" role="radiogroup" aria-label="Master source mode">
+                  <label><input type="radio" name="sideMode_master" value="live" checked> Live</label>
+                  <label><input type="radio" name="sideMode_master" value="bak"> Bak</label>
                 </div>
-                <div class="picker-recent">
-                  <select id="recent_master">
-                    <option value="">Select a recent backup…</option>
-                    {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
-                  </select>
+                <div class="side-live" id="livePane_master">
+                  <input id="liveMasterServer" placeholder="server" class="live-in" autocomplete="off">
+                  <input id="liveMasterPort" placeholder="port" class="live-in" value="1433" inputmode="numeric">
+                  <input id="liveMasterUser" placeholder="user" class="live-in" autocomplete="username">
+                  <input id="liveMasterPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+                  <button type="button" class="ghost sm" id="connectMaster">Connect</button>
+                  <select id="db_master" class="live-in"><option value="">Database…</option></select>
+                  <span id="connectStatus_master" class="hint"></span>
                 </div>
-                <div class="picker-browse" style="display:none;">
-                  <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+                <div class="side-bak" id="bakPane_master" hidden>
+                  <button type="button" class="ghost sm" id="pickBak_master">Choose .bak…</button>
+                  <span id="bakPath_master" class="hint"></span>
+                  <p id="bakDesktopHint_master" class="hint" hidden>Use the desktop app to pick .bak files.</p>
                 </div>
-                <div class="selected-chip" style="display:none;"></div>
               </div>
 
               <div class="picker-slot" id="slot_client" data-role="client">
-                <div class="picker-slot-label">Client backup</div>
-                <div class="picker-tabs">
-                  <div class="picker-tab active" data-mode="recent">Recent</div>
-                  <div class="picker-tab" data-mode="browse">Browse device</div>
+                <div class="picker-slot-label">Client</div>
+                <div class="side-mode-toggle" role="radiogroup" aria-label="Client source mode">
+                  <label><input type="radio" name="sideMode_client" value="live" checked> Live</label>
+                  <label><input type="radio" name="sideMode_client" value="bak"> Bak</label>
                 </div>
-                <div class="picker-recent">
-                  <select id="recent_client">
-                    <option value="">Select a recent backup…</option>
-                    {% for b in backups %}<option value="{{ b.path }}">{{ b.label }}</option>{% endfor %}
-                  </select>
+                <div class="side-live" id="livePane_client">
+                  <input id="liveClientServer" placeholder="server" class="live-in" autocomplete="off">
+                  <input id="liveClientPort" placeholder="port" class="live-in" value="1433" inputmode="numeric">
+                  <input id="liveClientUser" placeholder="user" class="live-in" autocomplete="username">
+                  <input id="liveClientPass" type="password" placeholder="password" class="live-in" autocomplete="off">
+                  <button type="button" class="ghost sm" id="connectClient">Connect</button>
+                  <select id="db_client" class="live-in"><option value="">Database…</option></select>
+                  <span id="connectStatus_client" class="hint"></span>
                 </div>
-                <div class="picker-browse" style="display:none;">
-                  <div class="browse-box"><div class="browse-crumb"></div><div class="browse-list"></div></div>
+                <div class="side-bak" id="bakPane_client" hidden>
+                  <button type="button" class="ghost sm" id="pickBak_client">Choose .bak…</button>
+                  <span id="bakPath_client" class="hint"></span>
+                  <p id="bakDesktopHint_client" class="hint" hidden>Use the desktop app to pick .bak files.</p>
                 </div>
-                <div class="selected-chip" style="display:none;"></div>
               </div>
             </div>
 
             <div class="directions">
-              <label><input type="checkbox" id="dirC105" checked> Client → 105 <span class="hint">(reflect client's changes onto 105)</span></label>
+              <label><input type="checkbox" id="dirC105" checked> Review client extras <span class="hint">(download-only script; never applied from UI)</span></label>
               <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
             </div>
 
@@ -180,18 +185,7 @@
               <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
               <button id="go">Compare</button>
             </div>
-            <details class="block" id="applyTargetDetails" style="margin-top:12px;">
-              <summary>Client SQL connection (interactive apply to client only - never 105)</summary>
-              <p class="hint">Used by Apply to client after a <code>.bak</code> compare.</p>
-              <p id="applyConnStatus" class="hint">Enter server and database.</p>
-              <div class="live-conn-grid">
-                <input id="applyTargetServer" placeholder="server" class="live-in">
-                <input id="applyTargetPort" placeholder="port" class="live-in">
-                <input id="applyTargetDb" placeholder="database" class="live-in">
-                <input id="applyTargetUser" placeholder="user" class="live-in">
-                <input id="applyTargetPass" type="password" placeholder="password" class="live-in" autocomplete="off">
-              </div>
-            </details>
+            <p class="hint">Apply to client uses the Client live connection above (105 is never written).</p>
           </div>
         </section>
 
@@ -203,7 +197,7 @@
         <details class="legend block" id="compareLegend">
           <summary>What do these mean? - legend</summary>
           <div class="legend-grid">
-            <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Client → 105</b> this means the client added it.</div></div>
+            <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Review client extras</b> this means the client added it.</div></div>
             <div class="lg-item"><span class="tag modified">modified</span><div>Exists on both sides but differs - a body/parameter/column change.</div></div>
             <div class="lg-item"><span class="tag only_on_other">only on other side</span><div>Informational: the other side has this, this direction's source doesn't. Never auto-deleted.</div></div>
             <div class="lg-item"><span class="tag formatting">formatting</span><div>Text differs but whitespace/comments/casing-normalized text doesn't - no behavior change.</div></div>
@@ -222,17 +216,9 @@
         </div>
       </div>
 
-      <div id="compareSubLivescan" class="compare-subpane" data-compare-sub="livescan" hidden>
-        <div id="liveScanBanner" class="run-warning">Live scan is <strong>SCAN_ONLY</strong>: triage preview only. Apply is disabled. Run a <code>.bak</code> compare on Schema for apply scripts.</div>
-        <div class="run-actions">
-          <button type="button" id="liveScanBtn" disabled>Run live scan</button>
-        </div>
-        <div id="liveResults" class="block" style="display:none;"></div>
-      </div>
-
       <div id="compareSubDatacopy" class="compare-subpane" data-compare-sub="datacopy" hidden>
         <section class="block">
-          <p class="hint">Copy config rows (menu, programs, messages, pages) from master to <strong>client only</strong>. Preview counts before apply.</p>
+          <p class="hint">Uses Master/Client live fields from the Schema tab. Copy config rows from master to <strong>client only</strong>. Preview counts before apply.</p>
           <button type="button" id="datacopyLoadTables" disabled>Load config tables</button>
           <div id="datacopyTableList" class="datacopy-tables"></div>
           <div class="run-actions">
@@ -288,7 +274,7 @@
         <div class="drift-row">
           <label>Direction
             <select id="driftDirection">
-              <option value="client_to_105">Client → 105</option>
+              <option value="client_to_105">Review client extras</option>
               <option value="105_to_client">105 → Client</option>
             </select>
           </label>

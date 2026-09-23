@@ -55,13 +55,23 @@ class TestCompareSubtabs(unittest.TestCase):
         ):
             self.assertIn(f'id="{bid}"', html)
 
-    def test_apply_target_hint_has_no_localhost(self):
+    def test_live_first_schema_markup(self):
         html = self.client.get("/").data.decode("utf-8")
-        start = html.index('id="applyTargetDetails"')
-        chunk = html[start:start + 1200]
-        self.assertNotIn("127.0.0.1", chunk)
-        self.assertNotIn("14330", chunk)
-        self.assertIn('id="applyConnStatus"', chunk)
+        for required_id in (
+            "trimPairPane",
+            "pairMaster",
+            "pairClient",
+            "liveMasterServer",
+            "db_master",
+            "db_client",
+            "pickBak_master",
+            "pickBak_client",
+        ):
+            self.assertIn(f'id="{required_id}"', html)
+        self.assertNotIn('id="compareSubLivescan"', html)
+        self.assertNotIn('id="applyTargetServer"', html)
+        self.assertNotIn("reflect client's changes onto 105", html)
+        self.assertIn("Review client extras", html)
 
     def test_backfill_then_assemble_update(self):
         from drift import scriptgen
