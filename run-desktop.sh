@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Desktop window for the drift tool (GTK WebKit via pywebview).
+# Desktop window for the drift tool (Flask + GTK WebKit2).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 # Prefer the 3.12 venv: system PyGObject matches that interpreter.
-# python3.13 can import pywebview but not GTK bindings on this machine.
 CANDIDATES=(
   "$ROOT/venv_desktop/bin/python"
   /media/alaa/data/olives/apps/drift-tool/venv_desktop/bin/python
@@ -25,8 +24,9 @@ for candidate in "${CANDIDATES[@]}"; do
 done
 
 if [[ -z "$PY" ]]; then
-  echo "No Python can import webview, flask, sqlglot, and gi." >&2
-  echo "Fix: $ROOT/venv_desktop/bin/python -m pip install flask pymssql sqlglot pywebview" >&2
+  echo "No Python can import flask, sqlglot, and gi (PyGObject)." >&2
+  echo "Fix: $ROOT/venv_desktop/bin/python -m pip install flask pymssql sqlglot" >&2
+  echo "Also need system packages: python3-gi gir1.2-webkit2-4.1" >&2
   exit 1
 fi
 

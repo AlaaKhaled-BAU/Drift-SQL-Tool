@@ -156,7 +156,7 @@ function confirmClientApply(scriptName) {
     alert("Enter client server and database on the Schema tab.");
     return false;
   }
-  const msg = `Apply ${scriptName} to CLIENT ${server}/${db}?\nMaster will not be written.`;
+  const msg = `Apply ${scriptName} to CLIENT ${server}/${db}?\n105 / Master will not be written.`;
   return confirm(msg);
 }
 
@@ -361,7 +361,7 @@ async function loadRun(runId) {
   syncDriftFromRun();
 }
 
-document.getElementById("newRunBtn").addEventListener("click", () => {
+document.getElementById("newRunBtn")?.addEventListener("click", () => {
   switchTool("compare");
   IS_LIVE_SCAN = false;
   document.getElementById("pickerSection").style.display = "block";
@@ -796,7 +796,7 @@ function renderWorkspace(direction) {
     ? `<a class="ghost sm" id="extrasDownload_${direction}" href="#" hidden download="review_client_extras.sql">Download review_client_extras.sql</a>`
     : `<button class="ghost sm" id="applyClientBtn_${direction}" style="margin-left:6px;display:none;">Apply to client (interactive)</button>`}
       <div id="rehearseResidue_${direction}" class="hint"></div>
-      <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply disabled - live scan is preview-only. Run a <code>.bak</code> compare to assemble client-targeted scripts.</div>
+      <div id="applyLiveNote_${direction}" class="run-warning" style="display:none;margin-top:8px;">Apply needs a Client live connection on Schema (server + database). 105 is never written.</div>
       <div id="applyOut_${direction}"></div>
     </section>
 
@@ -1668,7 +1668,7 @@ function switchTool(tool) {
     pane.hidden = !on;
   });
   const shell = document.getElementById("appShell");
-  if (shell) shell.classList.toggle("rail-hidden-on-trimmer", tool === "trimmer");
+  if (shell) shell.classList.add("rail-hidden-on-trimmer");
   if (tool === "compare") switchCompareSubtab(ACTIVE_COMPARE_SUBTAB);
   if (tool === "drift") syncDriftFromRun();
 }

@@ -28,6 +28,28 @@ def _side_kind(side: dict) -> str:
     return side.get("kind", "bak")
 
 
+def _side_for_meta(side: dict) -> dict:
+    return {k: v for k, v in side.items() if k != "password"}
+
+
+def _assert_source_cache_fresh(side: str, recorded: dict) -> None:
+    """Bak sides must still match size/mtime; live sides trust the cached dacpacs."""
+    if not recorded:
+        raise RuntimeError(f"{side} cache key missing -- run a full compare instead")
+    if "live" in recorded:
+        return
+    p = Path(recorded["path"])
+    if not p.is_file():
+        raise FileNotFoundError(f"{side} backup no longer exists at {p} -- cannot re-compare")
+    st = p.stat()
+    if st.st_size != recorded["size"] or st.st_mtime != recorded["mtime"]:
+        raise RuntimeError(
+            f"{side} backup at {p} has changed (size/mtime differs from this run's "
+            f"capture) -- it may have been re-exported since; run a full compare "
+            f"instead of trusting a stale cache"
+        )
+
+
 def run_compare(master_path: str, client_path: str, directions: list, log, type_filter: set | None = None,
                 client_active_id=None) -> dict:
     return run_compare_sides(
@@ -326,8 +348,8 @@ def run_compare_sides(master_side: dict, client_side: dict, directions: list, lo
         "run_id": run_id,
         "master_path": str(master_path) if master_bak else "",
         "client_path": str(client_path) if client_bak else "",
-        "master_side": master_side,
-        "client_side": client_side,
+        "master_side": _side_for_meta(master_side),
+        "client_side": _side_for_meta(client_side),
         "header_master": header_master, "header_client": header_client,
         "directions": directions,
         "trigger_present": {"master": cl_master["trigger_present"], "client": cl_client["trigger_present"]},
@@ -654,15 +676,7 @@ def recompare(run_id: str, direction: str, log, type_filter=_UNSET) -> dict:
         raise RuntimeError(f"run {run_id!r} predates the re-compare feature (no bak_cache_key in meta.json) "
                             f"-- run a full compare instead")
     for side in ("master", "client"):
-        recorded = cache_key[side]
-        p = Path(recorded["path"])
-        if not p.is_file():
-            raise FileNotFoundError(f"{side} backup no longer exists at {p} -- cannot re-compare")
-        st = p.stat()
-        if st.st_size != recorded["size"] or st.st_mtime != recorded["mtime"]:
-            raise RuntimeError(f"{side} backup at {p} has changed (size/mtime differs from this run's "
-                                f"capture) -- it may have been re-exported since; run a full compare "
-                                f"instead of trusting a stale cache")
+        _assert_source_cache_fresh(side, cache_key.get(side) or {})
 
     dacpac_master = Path(meta["artifacts"]["dacpac_master"])
     dacpac_client = Path(meta["artifacts"]["dacpac_client"])

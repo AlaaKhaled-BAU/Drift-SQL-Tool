@@ -18,6 +18,9 @@ class RestoreCopy(unittest.TestCase):
                     self.fail(e)
             argv = " ".join(str(c) for call in run.call_args_list for c in (call[0][0] if call[0] else []))
             self.assertIn("cp", argv.lower())
+            dest = run.call_args[0][0][-1]
+            self.assertIn("drift_", dest)
+            self.assertNotEqual(dest.split(":")[-1], "/tmp/x.bak")
 
 
 if __name__ == "__main__":

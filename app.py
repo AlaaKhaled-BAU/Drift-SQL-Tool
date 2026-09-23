@@ -233,15 +233,26 @@ def api_trim():
     return jsonify(data), status
 
 
+# desktop.py runs as __main__, so `import desktop` is a second module with
+# CHOOSER_ENABLED still False. Register the picker from the running process.
+_bak_picker = None
+
+
+def register_bak_picker(fn):
+    global _bak_picker
+    _bak_picker = fn
+
+
+@app.get("/api/desktop/chooser")
+def api_desktop_chooser_status():
+    return jsonify({"ok": _bak_picker is not None})
+
+
 @app.route("/api/desktop/open_bak", methods=["GET", "POST"])
 def api_desktop_open_bak():
-    try:
-        import desktop
-    except ImportError:
+    if _bak_picker is None:
         return jsonify({"ok": False, "error": "use the desktop app"}), 501
-    if not desktop.chooser_available():
-        return jsonify({"ok": False, "error": "use the desktop app"}), 501
-    path = desktop.pick_bak_blocking()
+    path = _bak_picker()
     if not path:
         return jsonify({"ok": False, "error": "cancelled or unavailable"}), 400
     return jsonify({"ok": True, "path": path})
@@ -350,6 +361,8 @@ def _redact_side(side: dict | None) -> dict | None:
 
 def _conn_key(side: dict) -> tuple:
     server = (side.get("server") or "").strip().lower()
+    if server in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        server = "localhost"
     port = int(side.get("port") or 1433)
     database = (side.get("database") or "").strip().lower()
     return server, port, database
@@ -1026,9 +1039,12 @@ def api_rehearse_endpoint(run_id, direction):
     if not script_path.is_file():
         return jsonify({"error": "assemble an apply script first (Apply button)"}), 400
     batches = [b.strip() for b in script_path.read_text(encoding="utf-8").split("\nGO") if b.strip()]
-    bak = Path(((run["meta"].get("bak_cache_key") or {}).get("client") or {}).get("path") or "")
-    if not bak.is_file():
-        return jsonify({"error": f"client backup not on disk anymore: {bak}"}), 400
+    bak_path = ((run["meta"].get("bak_cache_key") or {}).get("client") or {}).get("path") or ""
+    bak = Path(bak_path) if bak_path else Path()
+    if not bak_path or not bak.is_file():
+        return jsonify({
+            "error": "rehearse is not available for a live client — restore a client .bak to scratch, or apply on a staging copy",
+        }), 400
     report = executor.rehearse(bak, batches, lambda m: print(f"[rehearse] {m}"))
     out = run["run_dir"] / direction / "apply" / "execution_report.json"
     out.write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")

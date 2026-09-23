@@ -17,6 +17,7 @@ LOG = os.path.join(os.path.expanduser("~"), ".drift-tool-desktop.log")
 
 CHOOSER_ENABLED = False
 _CHOOSER_LOCK = threading.Lock()
+_MAIN_WIN = None
 
 
 def log(m):
@@ -40,20 +41,25 @@ def _has_display() -> bool:
 def _run_dialog_on_gtk_main() -> str | None:
     from gi.repository import Gtk
 
-    dialog = Gtk.FileChooserNative(
-        title="Select SQL Server backup",
-        action=Gtk.FileChooserAction.OPEN,
-        modal=True,
+    dialog = Gtk.FileChooserNative.new(
+        "Select SQL Server backup",
+        _MAIN_WIN,
+        Gtk.FileChooserAction.OPEN,
+        "_Open",
+        "_Cancel",
     )
+    dialog.set_modal(True)
     filt = Gtk.FileFilter()
     filt.set_name("SQL Server backups (*.bak)")
     filt.add_pattern("*.bak")
     dialog.add_filter(filt)
+    log("bak chooser showing")
     resp = dialog.run()
     path = None
     if resp == Gtk.ResponseType.ACCEPT:
         path = dialog.get_filename()
     dialog.destroy()
+    log(f"bak chooser done path={path!r}")
     return path
 
 
@@ -68,7 +74,8 @@ def pick_bak_blocking(timeout: float = 300.0) -> str | None:
     def _idle():
         try:
             result_q.put(_run_dialog_on_gtk_main())
-        except Exception:
+        except Exception as e:
+            log(f"bak chooser error: {e}")
             result_q.put(None)
         return False
 
@@ -116,8 +123,15 @@ def wait_for_flask(timeout=15):
     return False
 
 
+def set_main_window(win):
+    global _MAIN_WIN
+    _MAIN_WIN = win
+
+
 if __name__ == "__main__":
     enable_desktop_chooser()
+    import app as flask_app
+    flask_app.register_bak_picker(pick_bak_blocking)
     t = threading.Thread(target=start_flask, daemon=True)
     t.start()
     if not wait_for_flask():
@@ -134,6 +148,7 @@ if __name__ == "__main__":
         view.load_uri(f"http://{HOST}:{PORT}/")
         win.connect("destroy", Gtk.main_quit)
         win.show_all()
+        set_main_window(win)
         log("window registered, starting GUI loop")
         Gtk.main()
         log("window closed normally")

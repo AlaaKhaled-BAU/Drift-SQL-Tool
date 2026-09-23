@@ -17,6 +17,7 @@ import style to accommodate a test runner.
 import json
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -196,6 +197,12 @@ def test_recompare_refuses_when_source_backup_changed():
                 assert "changed" in str(e)
     finally:
         pipeline.config.OUTPUT_DIR = original_output_dir
+
+
+class TestLiveRecompareCache(unittest.TestCase):
+    def test_recompare_live_cache_keys_do_not_require_bak_path(self):
+        pipeline._assert_source_cache_fresh("master", {"live": "Olives_BO"})
+        pipeline._assert_source_cache_fresh("client", {"live": "ClientDb"})
 
 
 

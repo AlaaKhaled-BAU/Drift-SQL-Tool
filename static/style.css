@@ -55,7 +55,14 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ---------- app shell ---------- */
-.app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+.app-shell { display: grid; grid-template-columns: 1fr; min-height: 100vh; }
+.top-bar {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; margin: 0 0 18px; padding: 4px 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.top-bar .brand { position: static; }
+.top-bar .tool-tabs { margin: 0; }
 .rail {
   background: var(--surface-0); border-right: 1px solid var(--border-soft);
   /* rail surface #090c16 */
@@ -96,7 +103,7 @@ a:hover { text-decoration: underline; }
 .rail-empty { color: var(--text-faint); font-size: 12px; padding: 8px; }
 
 /* ---------- main ---------- */
-main { padding: 22px 28px 60px; max-width: 1180px; }
+main { padding: 22px 28px 60px; max-width: none; width: 100%; }
 h1 { font-size: 19px; margin: 0 0 2px; font-weight: 700; letter-spacing: -.01em; }
 .sub { color: var(--text-dim); font-size: 12.5px; margin-bottom: 20px; }
 h2 { font-size: 13px; margin: 0; font-weight: 700; color: var(--text); }
@@ -166,11 +173,16 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 button.sm { padding: 5px 10px; font-size: 12px; }
 .copy-toast { font-size: 11.5px; color: var(--trim-kept); margin-left: 6px; }
 
-.run-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
-.directions { display: flex; gap: 18px; margin-top: 12px; font-size: 12.5px; color: var(--text-dim); }
+.schema-toolbar {
+  display: flex; flex-direction: column; gap: 10px;
+  margin: 0 0 14px; padding: 0 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin: 0; }
+.schema-toolbar .run-actions { justify-content: flex-start; }
+.directions { display: flex; flex-wrap: wrap; gap: 18px; margin: 0; font-size: 12.5px; color: var(--text-dim); }
 .directions label { display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; }
-/* D5a */
-.type-filter { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+.type-filter { margin: 0; padding: 0; border: 0; }
 .type-filter-label { font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; }
 .type-filter-options { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text-dim); }
 .type-filter-options label { display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; }
@@ -422,7 +434,7 @@ tr.finding-row.row-approved:hover {
 .ub-exec-row.fatal .ub-exec-class, .ub-exec-row.fatal .ub-exec-msg { color: var(--red); }
 
 /* ---------- tool tabs (Trimmer / SQL Compare / Drift tool) ---------- */
-.main-content { padding: 20px 24px 40px; max-width: 1400px; }
+.main-content { padding: 20px 24px 40px; max-width: none; width: 100%; }
 .tool-tabs {
   display: inline-flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap;
   background: var(--surface-0); border: 1px solid var(--border-soft);
@@ -501,6 +513,19 @@ tr.finding-row.row-approved:hover {
 .backfill-panel label { display: block; margin: 6px 0; }
 .app-shell.rail-hidden-on-trimmer { grid-template-columns: 1fr; }
 .app-shell.rail-hidden-on-trimmer .rail { display: none; }
+.pair-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px;
+  margin: 0 0 14px;
+}
+.pair-toolbar .drift-lenses { margin: 0; }
+.trim-pair-grid {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px; min-width: 0; width: 100%;
+}
+.trim-pair-grid > label {
+  display: flex; flex-direction: column; min-width: 0; font-size: 12px; color: var(--text-dim);
+}
+.trim-pair-grid textarea { min-height: 280px; width: 100%; margin: 8px 0 0; }
 .trimmer-panel textarea.trim-source { width: 100%; margin: 10px 0; font-family: inherit; }
 .drift-preview {
   background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);

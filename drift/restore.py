@@ -1,7 +1,9 @@
 """RESTORE a .bak into the scratch container as a live, queryable database."""
+import re
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pymssql
@@ -43,10 +45,15 @@ def open_connection(side: dict | None, scratch_db: str, autocommit=True, timeout
     )
 
 
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 def stage_bak_in_container(host_path: Path, log) -> str:
     """Copy a host .bak into the scratch container; return the in-container path."""
     host_path = host_path.resolve()
-    container_path = f"/tmp/{host_path.name}"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", host_path.name) or "backup.bak"
+    container_path = f"/tmp/drift_{uuid.uuid4().hex}_{safe_name}"
     log(f"staging {host_path.name} into container {config.CONTAINER_NAME}...")
     r = subprocess.run(
         ["docker", "cp", str(host_path), f"{config.CONTAINER_NAME}:{container_path}"],
@@ -85,13 +92,13 @@ def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
     cur = conn.cursor(as_dict=True)
 
     log(f"reading backup header: {bak_host_path.name}")
-    cur.execute(f"RESTORE HEADERONLY FROM DISK = '{container_path}'")
+    cur.execute(f"RESTORE HEADERONLY FROM DISK = {_sql_literal(container_path)}")
     header = cur.fetchone()
     backup_date = header.get("BackupStartDate")
     sw_version = header.get("SoftwareVersionMajor")
     log(f"  backup taken {backup_date}, engine major version {sw_version}")
 
-    cur.execute(f"RESTORE FILELISTONLY FROM DISK = '{container_path}'")
+    cur.execute(f"RESTORE FILELISTONLY FROM DISK = {_sql_literal(container_path)}")
     files = cur.fetchall()
 
     move_clauses = []
@@ -112,7 +119,7 @@ def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
     client_error = None
     try:
         cur.execute(
-            f"RESTORE DATABASE [{db_name}] FROM DISK = '{container_path}' "
+            f"RESTORE DATABASE [{db_name}] FROM DISK = {_sql_literal(container_path)} "
             # STATS=5 forces SQL Server to push progress packets over the wire every
             # 5% instead of staying completely silent until the restore finishes --
             # without it a long restore looks identical to a dead connection to

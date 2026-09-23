@@ -10,23 +10,19 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<div class="app-shell" id="appShell">
-  <nav class="rail" id="leftRail">
-    <div class="brand">
-      <div class="brand-mark">O</div>
-      <div>
-        <div class="brand-name">DB Drift Tool</div>
-        <div class="brand-sub">Master (105) vs Client</div>
-      </div>
-    </div>
-
-    <button class="rail-btn ghost sm" id="newRunBtn" type="button">New comparison</button>
-  </nav>
-
+<div class="app-shell rail-hidden-on-trimmer" id="appShell">
   <main class="main-content">
-    <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
+    <header class="top-bar">
+      <div class="brand">
+        <div class="brand-mark">O</div>
+        <div>
+          <div class="brand-name">DB Drift Tool</div>
+          <div class="brand-sub">Master (105) vs Client</div>
+        </div>
+      </div>
+      <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
       <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab tab-tip active" data-tool="trimmer" aria-selected="true"
-        title="Paste one procedure and a ClientActive ID to see what that client actually runs; leftover branches are listed as harvest (reading only)."
+        title="Paste one procedure and a ClientActive ID to see what that client actually runs."
        >Trimmer</button>
       <button type="button" role="tab" id="toolTabCompare" class="tool-tab tab-tip" data-tool="compare" aria-selected="false"
         title="Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift."
@@ -35,6 +31,7 @@
         title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
        >Drift tool</button>
     </nav>
+    </header>
 
     <div id="workBar" class="work-bar" hidden role="status" aria-live="polite">
       <div class="work-bar-track"><div class="work-bar-indeterminate"></div></div>
@@ -69,27 +66,21 @@
           </div>
         </div>
         <div id="trimUnknown" class="run-warning" hidden>Some gates could not be decided; they were kept in the result.</div>
-        <div class="trim-harvest-head">
-          <h3>Harvest (not executed by this client - copy later)</h3>
-          <span>
-            <button type="button" id="trimHarvestCopyBtn" class="ghost sm" disabled>Copy</button>
-            <span id="trimHarvestCopyToast" class="copy-toast" hidden>Copied</span>
-          </span>
-        </div>
-        <pre id="trimHarvest" class="trim-harvest">Branches this client does not run show up here.</pre>
       </section>
       <section class="block trimmer-panel glass-panel" id="trimPairPane" data-trim-sub="pair" hidden>
+        <div class="pair-toolbar">
+          <label class="trim-label">ClientActive ID <input id="pairClientActiveId" type="number" min="1" step="1" placeholder="required for active lenses"></label>
+          <div class="drift-lenses" role="radiogroup" aria-label="Pair lens">
+            <label><input type="radio" name="pairLens" value="full" checked> Full</label>
+            <label><input type="radio" name="pairLens" value="active_read"> ClientActive reads</label>
+            <label><input type="radio" name="pairLens" value="active_plus_else"> ClientActive + ELSE</label>
+          </div>
+          <button type="button" id="pairRunBtn">Compare pair</button>
+        </div>
         <div class="trim-pair-grid">
-          <label>Master (105) definition<textarea id="pairMaster" rows="14" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
-          <label>Client definition<textarea id="pairClient" rows="14" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
+          <label>Master (105) definition<textarea id="pairMaster" rows="16" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
+          <label>Client definition<textarea id="pairClient" rows="16" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
         </div>
-        <label class="trim-label">ClientActive ID <input id="pairClientActiveId" type="number" min="1" step="1" placeholder="required for active lenses"></label>
-        <div class="drift-lenses" role="radiogroup" aria-label="Pair lens">
-          <label><input type="radio" name="pairLens" value="full" checked> Full</label>
-          <label><input type="radio" name="pairLens" value="active_read"> ClientActive reads</label>
-          <label><input type="radio" name="pairLens" value="active_plus_else"> ClientActive + ELSE</label>
-        </div>
-        <button type="button" id="pairRunBtn">Compare pair</button>
         <pre id="pairPreview" class="trim-out"></pre>
         <div class="drift-copy-row">
           <span id="pairCopyKind" class="hint"></span>
@@ -119,6 +110,27 @@
       <div id="compareSubSchema" class="compare-subpane" data-compare-sub="schema">
         <section class="block" id="pickerSection">
           <div class="picker-panel" id="pickerPanelLocal">
+            <div class="schema-toolbar">
+              <div class="directions">
+                <label><input type="checkbox" id="dirC105" checked> Review client extras <span class="hint">(download-only script; never applied from UI)</span></label>
+                <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
+              </div>
+              <div class="type-filter">
+                <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
+                <div class="type-filter-options">
+                  {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
+                  {% for cat in type_categories %}
+                  <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
+                  {% endfor %}
+                </div>
+                <button type="button" class="ghost sm filter-chip" id="pkFkChip" title="Show only primary/foreign key constraints">PK/FK only</button>
+              </div>
+              <div class="run-actions">
+                <label class="trim-label">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
+                <button id="go">Compare</button>
+              </div>
+            </div>
+
             <div class="picker-grid">
               <div class="picker-slot" id="slot_master" data-role="master">
                 <div class="picker-slot-label">Master (105)</div>
@@ -163,27 +175,6 @@
                   <p id="bakDesktopHint_client" class="hint" hidden>Use the desktop app to pick .bak files.</p>
                 </div>
               </div>
-            </div>
-
-            <div class="directions">
-              <label><input type="checkbox" id="dirC105" checked> Review client extras <span class="hint">(download-only script; never applied from UI)</span></label>
-              <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
-            </div>
-
-            <div class="type-filter">
-              <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
-              <div class="type-filter-options">
-                {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
-                {% for cat in type_categories %}
-                <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
-                {% endfor %}
-              </div>
-              <button type="button" class="ghost sm filter-chip" id="pkFkChip" title="Show only primary/foreign key constraints">PK/FK only</button>
-            </div>
-
-            <div class="run-actions">
-              <label class="trim-label" style="margin-right:12px;">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
-              <button id="go">Compare</button>
             </div>
             <p class="hint">Apply to client uses the Client live connection above (105 is never written).</p>
           </div>

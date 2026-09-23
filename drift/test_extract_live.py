@@ -34,6 +34,8 @@ class ExtractLive(unittest.TestCase):
         self.assertIn("/Action:Extract", cmd)
         self.assertTrue(any("10.0.10.105,1433" in str(x) for x in cmd))
         self.assertFalse(any("14330" in str(x) for x in cmd))
+        self.assertFalse(any(str(x).startswith("/SourcePassword:") for x in cmd))
+        self.assertTrue(any(str(x).startswith("@") for x in cmd))
 
 
 if __name__ == "__main__":

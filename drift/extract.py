@@ -1,5 +1,7 @@
 """Live DB -> .dacpac (schema-only, parsed object model) via sqlpackage Extract."""
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config
@@ -15,6 +17,21 @@ def _run_extract(cmd, database_label: str, log, out_path) -> str:
     return str(out_path)
 
 
+def _extract_with_password(cmd, password: str, database_label: str, log, out_path) -> str:
+    """Keep /SourcePassword off argv (visible in ps); pass it via a 0600 response file."""
+    fd, rsp = tempfile.mkstemp(prefix="sqlpackage-", suffix=".rsp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"/SourcePassword:{password}\n")
+        return _run_extract(list(cmd) + [f"@{rsp}"], database_label, log, out_path)
+    finally:
+        try:
+            os.unlink(rsp)
+        except OSError:
+            pass
+
+
 def extract_dacpac_source(source: dict, out_path, log) -> str:
     """Extract schema from a caller-supplied SQL Server (live target)."""
     server = source["server"]
@@ -27,13 +44,12 @@ def extract_dacpac_source(source: dict, out_path, log) -> str:
         f"/SourceServerName:{server},{port}",
         f"/SourceDatabaseName:{database}",
         f"/SourceUser:{source['user']}",
-        f"/SourcePassword:{source['password']}",
         "/SourceTrustServerCertificate:True",
         f"/TargetFile:{out_path}",
         "/p:ExtractAllTableData=false",
         "/p:VerifyExtraction=false",
     ]
-    return _run_extract(cmd, database, log, out_path)
+    return _extract_with_password(cmd, source["password"], database, log, out_path)
 
 
 def extract_dacpac(db_name: str, out_path, log) -> str:
@@ -45,10 +61,9 @@ def extract_dacpac(db_name: str, out_path, log) -> str:
         f"/SourceServerName:127.0.0.1,{config.HOST_PORT}",
         f"/SourceDatabaseName:{db_name}",
         f"/SourceUser:{config.SA_USER}",
-        f"/SourcePassword:{config.SA_PASSWORD}",
         "/SourceTrustServerCertificate:True",  # scratch container uses a self-signed cert
         f"/TargetFile:{out_path}",
         "/p:ExtractAllTableData=false",
         "/p:VerifyExtraction=false",
     ]
-    return _run_extract(cmd, db_name, log, out_path)
+    return _extract_with_password(cmd, config.SA_PASSWORD, db_name, log, out_path)

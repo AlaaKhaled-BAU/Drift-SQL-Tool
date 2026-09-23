@@ -42,13 +42,12 @@ class TestCompareSubtabs(unittest.TestCase):
         self.assertIn('id="trimSplit"', html)
         self.assertIn('id="trimOriginal"', html)
         self.assertIn('id="trimOut"', html)
-        self.assertIn('id="trimHarvest"', html)
+        self.assertNotIn('id="trimHarvest"', html)
 
     def test_copy_buttons_in_index(self):
         html = self.client.get("/").data.decode("utf-8")
         for bid in (
             "trimOutCopyBtn",
-            "trimHarvestCopyBtn",
             "datacopyOutCopyBtn",
             "webOutCopyBtn",
             "driftCopyBtn",
@@ -72,6 +71,31 @@ class TestCompareSubtabs(unittest.TestCase):
         self.assertNotIn('id="applyTargetServer"', html)
         self.assertNotIn("reflect client's changes onto 105", html)
         self.assertIn("Review client extras", html)
+        self.assertNotIn('id="leftRail"', html)
+        self.assertNotIn('id="trimHarvest"', html)
+        self.assertLess(
+            html.index('id="pairClientActiveId"'),
+            html.index('id="pairMaster"'),
+            "Pair ClientActive/lens controls must sit above the two paste boxes",
+        )
+        self.assertLess(
+            html.index('id="compareClientActiveId"'),
+            html.index('id="slot_master"'),
+            "Schema ClientActive/direction/types must sit above the source pickers",
+        )
+        self.assertLess(
+            html.index('id="dirC105"'),
+            html.index('id="slot_master"'),
+        )
+
+    def test_open_bak_uses_registered_picker(self):
+        from app import register_bak_picker
+
+        register_bak_picker(lambda: "/tmp/x.bak")
+        resp = self.client.post("/api/desktop/open_bak")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["path"], "/tmp/x.bak")
+        register_bak_picker(None)
 
     def test_backfill_then_assemble_update(self):
         from drift import scriptgen
