@@ -95,16 +95,11 @@ def compare_procs(
     copy_from_master = direction == "105_to_client"
     source_def = left_def if copy_from_master else right_def
     source_settings = master_settings if copy_from_master else client_settings
-    source_harvest = left_harvest if copy_from_master else right_harvest
 
     copy_sql = ""
     copy_kind = "none"
     if not identical and (source_def or "").strip():
         copy_sql = _as_create_or_alter(source_def, source_settings)
-        if lens == "active_plus_else":
-            harvest_block = _harvest_comment_block(source_harvest)
-            if harvest_block:
-                copy_sql = copy_sql.rstrip() + "\n\n" + harvest_block
         copy_kind = "create_or_alter"
 
     oversized = [
@@ -132,24 +127,19 @@ def compare_procs(
 
 
 def _with_harvest_section(trimmed_sql: str, harvest: list) -> str:
-    block = _harvest_comment_block(harvest)
-    if not block:
+    else_sql = _else_sql_from_harvest(harvest)
+    if not else_sql:
         return trimmed_sql
-    return trimmed_sql.rstrip() + "\n\n" + block + "\n"
+    return trimmed_sql.rstrip() + "\n" + else_sql + "\n"
 
 
-def _harvest_comment_block(harvest: list) -> str:
-    lines: list[str] = []
+def _else_sql_from_harvest(harvest: list) -> str:
+    chunks: list[str] = []
     for item in harvest or []:
         if item.get("kind") != "else":
             continue
         body = (item.get("body") or "").strip()
         if not body:
             continue
-        lines.append("-- HARVEST ELSE (not executed for this @ClientActive)")
-        cond = item.get("condition") or "(else)"
-        lines.append(f"-- condition: {cond}")
-        for line in body.splitlines():
-            lines.append(f"-- {line}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
+        chunks.append("ELSE\nBEGIN\n" + body + "\nEND")
+    return "\n".join(chunks)

@@ -80,10 +80,9 @@ class CompareProcsLens(unittest.TestCase):
         r = compare_procs(LEFT, RIGHT, 66, "active_plus_else")
         self.assertTrue(r["ok"])
         self.assertIn("else-new", r["preview_right"])
-        self.assertTrue(
-            "-- HARVEST" in r["copy_sql"] or "else-new" in r["copy_sql"],
-            r["copy_sql"],
-        )
+        self.assertIn("ELSE", r["preview_right"])
+        self.assertNotIn("-- HARVEST", r["preview_right"])
+        self.assertNotIn("-- HARVEST", r["copy_sql"] or "")
 
     def test_active_read_identical_when_only_else_differs(self):
         r = compare_procs(SAME_ARM_LEFT, SAME_ARM_RIGHT, 66, "active_read")
