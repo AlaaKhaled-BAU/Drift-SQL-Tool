@@ -204,6 +204,28 @@ class ScopeResolution(unittest.TestCase):
         self.assertIn("UPDATE T SET A = 1", joined)
         self.assertIn("SELECT 2", joined)
 
+    def test_unbounded_no_match_with_no_keywords_is_excluded_not_copied(self):
+        # Unbraced IF whose "body" has no statement keyword in the mask.
+        r = resolve_scope(_proc(
+            "IF @ClientActive = 123 -- '\n"
+            "BEGIN\n SELECT 'other'\nEND"), 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertNotIn("other", joined)
+
+    def test_unbraced_single_statement_no_match_still_conservative(self):
+        """IF @ClientActive = 123 UPDATE ... with no BEGIN: extent is one statement;
+        that statement must not survive for client 8 if we can classify it.
+        If the segmenter cannot split, today's rule keeps it — this test
+        documents the bounded=false + UPDATE keyword path stays KEEP only
+        when we cannot prove the IF wraps just that UPDATE.
+        """
+        r = resolve_scope(_proc(
+            "IF @ClientActive = 123\n UPDATE T SET A = 1\nSELECT 2"), 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertIn("SELECT 2", joined)
+
 
 class FingerprintSemantics(unittest.TestCase):
     _SHARED = "INSERT INTO Log VALUES ('entry')"

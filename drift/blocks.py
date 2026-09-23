@@ -55,6 +55,7 @@ _begin_end_re = statements._BEGIN_END_RE                 # noqa: SLF001
 _is_begin_tran = statements._is_begin_tran               # noqa: SLF001
 _segment_statements = statements._segment_statements     # noqa: SLF001
 _classify = statements._classify                         # noqa: SLF001
+_KEYWORD_RE = statements._KEYWORD_RE                     # noqa: SLF001
 
 _VAR_RE = re.compile(r"@ClientActive\b", re.IGNORECASE)
 
@@ -449,7 +450,17 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     prior_uncertain = True
                     if b["body"]:
                         if not walk(b["body"]):
-                            relevant.append(b["body"])
+                            if not _KEYWORD_RE.search(_mask(b["body"])):
+                                stats["unknown"] -= 1
+                                stats["no_match"] += 1
+                                excluded.append({
+                                    "line": seg["line"],
+                                    "condition": b["condition"] or "(else)",
+                                    "kind": "other_client",
+                                    "body": b["body"] or "",
+                                })
+                            else:
+                                relevant.append(b["body"])
                     continue
                 if v == "match":
                     stats["match"] += 1
