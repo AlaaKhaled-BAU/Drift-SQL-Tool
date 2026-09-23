@@ -36,6 +36,10 @@ APPLY_SESSIONS: dict[str, dict] = {}
 
 AI_BATCH_CAP = 25
 
+REVIEW_CLIENT_EXTRAS_HEADER = (
+    "-- REVIEW ONLY. This tool will not execute this script. Do not apply from the UI."
+)
+
 
 def find_backups() -> list[dict]:
     seen, out = set(), []
@@ -314,6 +318,75 @@ def _sql_connect(side: dict):
     )
 
 
+def _sql_connect_for_list(side: dict):
+    """List databases on a server; connects to ``master`` when database omitted."""
+    if not (side.get("server") or "").strip():
+        return None
+    connect_side = dict(side)
+    if not (connect_side.get("database") or "").strip():
+        connect_side["database"] = "master"
+    return _sql_connect(connect_side)
+
+
+def _redact_side(side: dict | None) -> dict | None:
+    if not side:
+        return side
+    return {k: v for k, v in side.items() if k != "password"}
+
+
+def _conn_key(side: dict) -> tuple:
+    server = (side.get("server") or "").strip().lower()
+    port = int(side.get("port") or 1433)
+    database = (side.get("database") or "").strip().lower()
+    return server, port, database
+
+
+def _redact_run_meta(meta: dict) -> dict:
+    if meta.get("master_side"):
+        meta["master_side"] = _redact_side(meta["master_side"])
+    if meta.get("client_side"):
+        meta["client_side"] = _redact_side(meta["client_side"])
+    return meta
+
+
+def _persist_redacted_meta(run_dir: Path, meta: dict) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+
+
+def _start_compare_job(compare_callable):
+    job_id = uuid.uuid4().hex[:12]
+    q: queue.Queue = queue.Queue()
+    JOBS[job_id] = {"queue": q, "result": None, "error": None, "done": False, "kind": "compare"}
+
+    def log(msg: str):
+        print(f"[{job_id}] {msg}", flush=True)
+        q.put(msg)
+
+    def worker():
+        try:
+            result = compare_callable(log)
+            meta = _redact_run_meta(result["meta"])
+            result["meta"] = meta
+            _persist_redacted_meta(Path(result["run_dir"]), meta)
+            JOBS[job_id]["result"] = result
+            RUNS[result["run_id"]] = {
+                "run_dir": Path(result["run_dir"]),
+                "meta": meta,
+                "workspaces": result["workspaces"],
+                "findings": result["_findings"],
+            }
+        except Exception as e:  # noqa: BLE001 - surface every failure to the GUI, don't swallow
+            JOBS[job_id]["error"] = str(e)
+            log(f"FAILED: {e}")
+        finally:
+            JOBS[job_id]["done"] = True
+            q.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
 _BACKFILL_RERUN_MSG = (
     "this run was reloaded from a prior session and no longer has the full "
     "in-memory record apply-script assembly needs -- re-run the comparison "
@@ -397,9 +470,33 @@ def api_livescan():
     })
 
 
+@app.post("/api/live/databases")
+def api_live_databases():
+    side = request.get_json(silent=True) or {}
+    if not (side.get("server") or "").strip():
+        return jsonify({"error": "server required"}), 400
+    try:
+        conn = _sql_connect_for_list(side)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 400
+    if conn is None:
+        return jsonify({"error": "could not connect (check server, user, password)"}), 400
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name")
+        names = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "databases": names})
+
+
 @app.post("/api/compare")
 def api_compare():
     body = request.get_json(force=True)
+    master_side = body.get("master_side")
+    client_side = body.get("client_side")
+    use_sides = master_side is not None and client_side is not None
+
     master_path, client_path = body.get("master"), body.get("client")
     # PLAN-V5 Lane D / blueprint C5: optional named-profile defaults. A profile
     # is a saved bookmark of (master, client, client_active_id); when given and
@@ -416,11 +513,25 @@ def api_compare():
         master_path = master_path or prof.get("master_path") or ""
         client_path = client_path or prof.get("client_path") or ""
     directions = body.get("directions") or ["client_to_105"]
-    if not master_path or not client_path:
-        return jsonify({"error": "pick both Master (105) and Client"}), 400
-    for p in (master_path, client_path):
-        if not Path(p).is_file():
-            return jsonify({"error": f"not a file: {p}"}), 400
+
+    if use_sides:
+        for label, side in (("master_side", master_side), ("client_side", client_side)):
+            kind = side.get("kind", "bak")
+            if kind == "bak":
+                path = side.get("path")
+                if not path or not Path(path).is_file():
+                    return jsonify({"error": f"{label}: not a file: {path}"}), 400
+            elif kind == "live":
+                if not (side.get("server") or "").strip() or not (side.get("database") or "").strip():
+                    return jsonify({"error": f"{label}: live side needs server and database"}), 400
+            else:
+                return jsonify({"error": f"{label}: kind must be live or bak"}), 400
+    else:
+        if not master_path or not client_path:
+            return jsonify({"error": "pick both Master (105) and Client"}), 400
+        for p in (master_path, client_path):
+            if not Path(p).is_file():
+                return jsonify({"error": f"not a file: {p}"}), 400
 
     # D5a: null/absent = no filter (a clean full run). A non-empty list is
     # validated against the real category names -- a typo'd/forged category
@@ -447,33 +558,20 @@ def api_compare():
         if not client_active_id.isdigit():
             return jsonify({"error": "client_active_id must be a number"}), 400
 
-    job_id = uuid.uuid4().hex[:12]
-    q: queue.Queue = queue.Queue()
-    JOBS[job_id] = {"queue": q, "result": None, "error": None, "done": False, "kind": "compare"}
+    if use_sides:
+        def compare_callable(log):
+            return pipeline.run_compare_sides(
+                master_side, client_side, directions, log,
+                type_filter=type_filter, client_active_id=client_active_id,
+            )
+    else:
+        def compare_callable(log):
+            return pipeline.run_compare(
+                master_path, client_path, directions, log,
+                type_filter=type_filter, client_active_id=client_active_id,
+            )
 
-    def log(msg: str):
-        print(f"[{job_id}] {msg}", flush=True)
-        q.put(msg)
-
-    def worker():
-        try:
-            result = pipeline.run_compare(master_path, client_path, directions, log, type_filter=type_filter,
-                                          client_active_id=client_active_id)
-            JOBS[job_id]["result"] = result
-            RUNS[result["run_id"]] = {
-                "run_dir": Path(result["run_dir"]),
-                "meta": result["meta"],
-                "workspaces": result["workspaces"],
-                "findings": result["_findings"],
-            }
-        except Exception as e:  # noqa: BLE001 - surface every failure to the GUI, don't swallow
-            JOBS[job_id]["error"] = str(e)
-            log(f"FAILED: {e}")
-        finally:
-            JOBS[job_id]["done"] = True
-            q.put(None)  # sentinel: stream can close
-
-    threading.Thread(target=worker, daemon=True).start()
+    job_id = _start_compare_job(compare_callable)
     return jsonify({"job_id": job_id})
 
 
@@ -770,6 +868,9 @@ def api_apply(run_id, direction):
     apply_dir.mkdir(exist_ok=True)
     script_name = "add_update_on_105.sql" if direction == "client_to_105" else "add_update_on_client.sql"
     (apply_dir / script_name).write_text(result["script"], encoding="utf-8")
+    if direction == "client_to_105":
+        extras = REVIEW_CLIENT_EXTRAS_HEADER + "\n" + result["script"]
+        (apply_dir / "review_client_extras.sql").write_text(extras, encoding="utf-8")
     (apply_dir / "manifest.json").write_text(json.dumps(result["manifest"], indent=1), encoding="utf-8")
 
     return jsonify({"script": result["script"], "manifest": result["manifest"], "script_name": script_name})
@@ -1010,6 +1111,12 @@ def api_apply_start(run_id, direction):
     client_side = body.get("client") or {}
     if not _conn_params(client_side, "client"):
         return jsonify({"error": "client needs server and database"}), 400
+
+    master_side = run["meta"].get("master_side") or {}
+    if master_side.get("kind") == "live" and _conn_key(client_side) == _conn_key(master_side):
+        return jsonify({
+            "error": "apply forbidden: client connection matches master (105) server and database",
+        }), 403
 
     script_path = run["run_dir"] / direction / "apply" / "add_update_on_client.sql"
     if not script_path.is_file():

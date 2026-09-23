@@ -66,6 +66,24 @@ class TestApplyApi(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 403)
 
+    def test_apply_forbidden_when_client_equals_master(self):
+        run_id, run = _seed_run(self._tmpdir)
+        run["meta"]["master_side"] = {
+            "kind": "live",
+            "server": "client.example",
+            "port": 1433,
+            "database": "ClientDb",
+            "user": "m",
+        }
+        self._runs[run_id] = run
+        with unittest.mock.patch("app.livescan.connect", return_value=MagicMock()):
+            r = self.client.post(
+                f"/api/run/{run_id}/105_to_client/apply_start",
+                json=self._client_json(),
+            )
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("master", r.get_json().get("error", "").lower())
+
     def test_prompt_then_bind_skip(self):
         from app import executor, livescan
 
