@@ -8,6 +8,7 @@ cd "$ROOT"
 # python3.13 can import pywebview but not GTK bindings on this machine.
 CANDIDATES=(
   "$ROOT/venv_desktop/bin/python"
+  /media/alaa/data/olives/apps/drift-tool/venv_desktop/bin/python
   python3.12
   python3.13
   python3
@@ -16,7 +17,7 @@ CANDIDATES=(
 PY=""
 for candidate in "${CANDIDATES[@]}"; do
   if [[ -x "$candidate" ]] || command -v "$candidate" >/dev/null 2>&1; then
-    if "$candidate" -c "import webview, flask, sqlglot, gi" >/dev/null 2>&1; then
+    if "$candidate" -c "import flask, sqlglot, gi" >/dev/null 2>&1; then
       PY="$candidate"
       break
     fi

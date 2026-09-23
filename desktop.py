@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Drift Tool — Desktop wrapper (Flask + pywebview + GTK .bak picker)."""
+"""Drift Tool — Flask + GTK WebKit window + native .bak picker.
+
+pywebview's GTK backend leaves the WebKit input surface at 1x1, so clicks
+never hit the page. Own the Gtk.Window and expand the view.
+"""
 import os
 import queue
 import sys
@@ -13,7 +17,6 @@ LOG = os.path.join(os.path.expanduser("~"), ".drift-tool-desktop.log")
 
 CHOOSER_ENABLED = False
 _CHOOSER_LOCK = threading.Lock()
-_RESULT_QUEUE: queue.Queue | None = None
 
 
 def log(m):
@@ -25,14 +28,16 @@ def chooser_available() -> bool:
     return CHOOSER_ENABLED
 
 
+def enable_desktop_chooser():
+    global CHOOSER_ENABLED
+    CHOOSER_ENABLED = True
+
+
 def _has_display() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def _run_dialog_on_gtk_main() -> str | None:
-    import gi
-
-    gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk
 
     dialog = Gtk.FileChooserNative(
@@ -53,12 +58,9 @@ def _run_dialog_on_gtk_main() -> str | None:
 
 
 def pick_bak_blocking(timeout: float = 300.0) -> str | None:
-    """Block until the user picks a .bak file (GTK main thread). Desktop only."""
+    """Block until the user picks a .bak (GTK main thread). Desktop only."""
     if not CHOOSER_ENABLED or not _has_display():
         return None
-    import gi
-
-    gi.require_version("Gtk", "3.0")
     from gi.repository import GLib
 
     result_q: queue.Queue = queue.Queue(maxsize=1)
@@ -78,17 +80,17 @@ def pick_bak_blocking(timeout: float = 300.0) -> str | None:
             return None
 
 
-def enable_desktop_chooser():
-    global CHOOSER_ENABLED
-    CHOOSER_ENABLED = True
-
-
 log("started")
 log(f"DISPLAY={os.environ.get('DISPLAY', '(unset)')}")
 log(f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '(unset)')}")
 log(f"cwd={os.getcwd()}")
 
-import webview
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("WebKit2", "4.1")
+from gi.repository import Gtk, WebKit2
+
 from app import app
 
 HOST = "127.0.0.1"
@@ -123,15 +125,17 @@ if __name__ == "__main__":
         sys.exit(1)
     log("flask ready, opening window")
     try:
-        webview.create_window(
-            "Drift Tool — DB Schema Compare",
-            f"http://{HOST}:{PORT}",
-            width=1280,
-            height=800,
-            resizable=True,
-        )
+        win = Gtk.Window(title="Drift Tool — DB Schema Compare")
+        win.set_default_size(1280, 800)
+        view = WebKit2.WebView()
+        view.set_hexpand(True)
+        view.set_vexpand(True)
+        win.add(view)
+        view.load_uri(f"http://{HOST}:{PORT}/")
+        win.connect("destroy", Gtk.main_quit)
+        win.show_all()
         log("window registered, starting GUI loop")
-        webview.start(gui="gtk")
+        Gtk.main()
         log("window closed normally")
     except Exception as e:
         log(f"webview error: {e}")
