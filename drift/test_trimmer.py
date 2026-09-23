@@ -19,6 +19,54 @@ BEGIN
  SELECT 'shared'
 END"""
 
+LUXURY_QUOTE = """CREATE PROCEDURE [dbo].[OT_MimicLuxuryQuote]
+AS
+BEGIN
+IF @ClientActive = 8
+BEGIN
+  SELECT 'eight'
+END
+ELSE IF @ClientActive = 35 -- 'luxury items
+BEGIN
+  DELETE FROM OT_Stores WHERE SalesmanNo = @SalesmanNo
+  IF @ClientActive = 88
+  BEGIN
+    INSERT INTO @Xtb SELECT 1
+  END
+END
+ELSE IF @ClientActive in (83,149,160)-- Bladna
+BEGIN
+  SELECT 'bladna'
+END
+END"""
+
+
+class LuxuryQuoteChain(unittest.TestCase):
+    def test_client_8_drops_quoted_comment_arm_and_bladna(self):
+        r = trim_procedure(LUXURY_QUOTE, 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertIn("IF @ClientActive = 8", sql)
+        self.assertIn("eight", sql)
+        self.assertNotIn("@ClientActive = 88", sql)
+        self.assertNotIn("@Xtb", sql)
+        self.assertNotIn("Bladna", sql)
+        self.assertNotIn("bladna", sql)
+
+    def test_client_35_keeps_if_line(self):
+        r = trim_procedure(LUXURY_QUOTE, 35)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertIn("IF @ClientActive = 35", sql)
+        self.assertIn("DELETE FROM OT_Stores", sql)
+        self.assertNotIn("eight", sql)
+        self.assertNotIn("bladna", sql)
+
+    def test_client_88_does_not_keep_bladna(self):
+        r = trim_procedure(LUXURY_QUOTE, 88)
+        self.assertTrue(r["ok"], r.get("reason"))
+        self.assertNotIn("bladna", r["trimmed_sql"])
+
 
 class TrimProcedure(unittest.TestCase):
     def test_output_is_full_proc_without_else_arm(self):
@@ -85,6 +133,14 @@ class SendSalesmanData(unittest.TestCase):
         )
         self.assertNotIn("set PostedToERP=1", sql)
         self.assertGreater(r["stats"]["no_match"], 43)
+
+    def test_client_8_does_not_keep_88_or_bladna_stores(self):
+        r = trim_procedure(self.definition, 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertNotIn("if @ClientActive= 88", sql)
+        self.assertNotIn("Bladna", sql)
+        self.assertLess(len(sql), 400_000)
 
     def test_client_123_keeps_the_gate_and_its_if_line(self):
         r = trim_procedure(self.definition, 123)
