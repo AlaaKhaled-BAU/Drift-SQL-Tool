@@ -1,5 +1,10 @@
 """ponytail: minimal self-check, not a framework. Run: python3.13 test_diffing.py"""
-from diffing import diff_programmable, diff_columns, code_spans
+import unittest
+
+try:
+    from drift.diffing import diff_programmable, diff_columns, code_spans
+except ImportError:
+    from diffing import diff_programmable, diff_columns, code_spans
 
 
 def _joined_code(text: str) -> str:
@@ -150,6 +155,15 @@ def test_case_change_inside_literal_is_real_change():
     b = "CREATE PROCEDURE dbo.X AS\nBEGIN\n  UPDATE T SET Status = 'active'\nEND"
     r = diff_programmable(a, b)
     assert r["change_kind"] == "body", r
+
+
+def load_tests(loader, tests, pattern):
+    suite = unittest.TestSuite()
+    for name, obj in list(globals().items()):
+        if name.startswith("test_") and callable(obj):
+            suite.addTest(unittest.FunctionTestCase(obj))
+    return suite
+
 
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
