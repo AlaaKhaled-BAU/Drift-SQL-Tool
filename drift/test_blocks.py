@@ -116,6 +116,15 @@ class ScopeResolution(unittest.TestCase):
         self.assertEqual(r["stats"]["match"], 1)
         self.assertEqual(r["stats"]["no_match"], 2)
 
+    def test_kept_elseif_renders_as_if_when_it_is_the_only_arm(self):
+        r = resolve_scope(_proc(
+            "IF @ClientActive = 8\nBEGIN\n SELECT 8\nEND\n"
+            "ELSE IF @ClientActive = 66\nBEGIN\n SELECT 66\nEND"), 66)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertIn("IF @ClientActive = 66", joined)
+        self.assertNotIn("ELSE IF", joined)
+
     def test_all_gates_fail_so_else_is_the_clients_path(self):
         body = ("IF @ClientActive = 33\nBEGIN\n SELECT 'a'\nEND\n"
                 "ELSE IF @ClientActive = 165\nBEGIN\n SELECT 'b'\nEND\n"

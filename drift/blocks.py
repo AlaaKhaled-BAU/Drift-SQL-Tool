@@ -164,6 +164,63 @@ def _unwrap_body(slice_text: str) -> str | None:
     return None
 
 
+def _compound_interior(text: str) -> str | None:
+    """Interior of a segment that is itself a BEGIN/END compound, with no
+    code after the matching END. None for BEGIN TRAN or a partial block.
+    The scope walk descends into this instead of copying the compound
+    verbatim -- otherwise every gate inside the procedure's opening
+    BEGIN is invisible when that BEGIN's END is not the last token."""
+    masked = _mask(text)
+    lead = len(masked) - len(masked.lstrip())
+    if not re.match(r"BEGIN\b", masked[lead:], re.IGNORECASE):
+        return None
+    if _is_begin_tran(masked, lead + len("BEGIN")):
+        return None
+    bm = re.search(r"\bBEGIN\b", masked, re.IGNORECASE)
+    if not bm:
+        return None
+    depth = 1
+    end_at = close_end = None
+    for m in _begin_end_re.finditer(masked, bm.end()):
+        w = m.group().upper()
+        if w == "CASE" or (w == "BEGIN" and not _is_begin_tran(masked, m.end())):
+            depth += 1
+        elif w == "END":
+            depth -= 1
+            if depth == 0:
+                end_at, close_end = m.start(), m.end()
+                break
+    if end_at is None or masked[close_end:].strip():
+        return None
+    return text[bm.end():end_at].strip("\r\n ;")
+
+
+def _fingerprint_text(text: str) -> str:
+    """Scope identity ignores spacing around operators, so `@ClientActive=66`
+    and `@ClientActive = 66` are the same kept gate."""
+    n = diffing.normalize_sql(text)
+    return re.sub(r"\s*([=<>(),])\s*", r"\1", n)
+
+
+def _render_kept_branch(kind: str, condition: str | None, inner: str, *, leading: bool = False) -> str:
+    """Kept arm, with the gate line still visible. Dead arms are omitted
+    entirely; this is only for match and unknown branches.
+    `leading` is True for the first emitted arm of a chain so ELSE IF
+    is rewritten as IF (a lone ELSE IF is not valid T-SQL)."""
+    inner = (inner or "").strip("\n")
+    if kind == "else":
+        if leading:
+            return f"BEGIN\n{inner}\nEND"
+        return f"ELSE\nBEGIN\n{inner}\nEND"
+    cond = (condition or "").strip()
+    if kind == "elseif":
+        cond = re.sub(r"^IF\s+", "", cond, count=1, flags=re.IGNORECASE)
+        prefix = "IF" if leading else "ELSE IF"
+    else:
+        prefix = "IF"
+    return f"{prefix} {cond}\nBEGIN\n{inner}\nEND"
+
+
 def _parse_chain(chain_text: str) -> list[dict] | None:
     """Split ONE top-level IF-chain segment into ordered branches:
     [{kind: if|elseif|else, condition, body}]. Returns None when structure is
@@ -339,8 +396,12 @@ def resolve_scope(definition: str, client_active_id) -> dict:
         segs = _segment_body(body_text)
         if segs is None:
             return False
+
         for seg in segs:
             if seg["kind"] != "IF":
+                interior = _compound_interior(seg["text"])
+                if interior is not None and len(interior) < len(seg["text"]) and walk(interior):
+                    continue
                 relevant.append(seg["text"])
                 continue
             branches = _parse_chain(seg["text"])
@@ -350,6 +411,22 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 continue
             matched = False       # some earlier branch DEFINITELY runs for us
             prior_uncertain = False
+            emitted = False
+
+            def emit_kept(kind: str, condition: str | None, body: str) -> None:
+                """Keep the gate line around whatever of this arm still runs."""
+                nonlocal emitted
+                if not (body or "").strip():
+                    return
+                mark = len(relevant)
+                if walk(body):
+                    inner = "\n".join(relevant[mark:])
+                    del relevant[mark:]
+                else:
+                    inner = body
+                relevant.append(_render_kept_branch(kind, condition, inner, leading=not emitted))
+                emitted = True
+
             for b in branches:
                 if b["kind"] == "else":
                     v = "no_match" if matched else ("unknown" if prior_uncertain else "match")
@@ -371,8 +448,8 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     stats["unknown"] += 1
                     prior_uncertain = True
                     if b["body"]:
-                        relevant.append(b["body"])
-                        walk(b["body"])
+                        if not walk(b["body"]):
+                            relevant.append(b["body"])
                     continue
                 if v == "match":
                     stats["match"] += 1
@@ -380,13 +457,9 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 else:
                     stats["unknown"] += 1
                     prior_uncertain = True
-                if not b["body"]:
-                    continue
-                # Recurse into kept branches; keep the whole body verbatim
-                # only when the inner region couldn't be descended into --
-                # avoids double-counting nested content in relevant_blocks
-                # and keeps the fingerprint canonical.
-                if not walk(b["body"]):
+                if b.get("bounded"):
+                    emit_kept(b["kind"], b["condition"], b["body"] or "")
+                elif b["body"] and not walk(b["body"]):
                     relevant.append(b["body"])
         return True
 
@@ -407,7 +480,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
               "relevant_blocks": relevant, "excluded_blocks": excluded,
               "stats": stats}
     if structured:
-        norm = "\n--BLOCK--\n".join(diffing.normalize_sql(t) for t in relevant)
+        norm = "\n--BLOCK--\n".join(_fingerprint_text(t) for t in relevant)
         result["fingerprint"] = hashlib.sha256(norm.encode()).hexdigest()[:16]
     else:
         result["fingerprint"] = None

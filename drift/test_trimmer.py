@@ -25,6 +25,7 @@ class TrimProcedure(unittest.TestCase):
         r = trim_procedure(PROC, 66)
         self.assertTrue(r["ok"], r.get("reason"))
         self.assertIn("CREATE PROCEDURE", r["trimmed_sql"])
+        self.assertIn("IF @ClientActive = 66", r["trimmed_sql"])
         self.assertIn("mine", r["trimmed_sql"])
         self.assertIn("shared", r["trimmed_sql"])
         self.assertNotIn("new feature", r["trimmed_sql"])
@@ -42,6 +43,59 @@ class TrimProcedure(unittest.TestCase):
         r = trim_procedure("", 66)
         self.assertFalse(r["ok"])
         self.assertIsNone(r.get("trimmed_sql"))
+
+    def test_middle_elseif_emits_if_not_else_if(self):
+        proc = """CREATE PROCEDURE [dbo].[zz]
+AS
+BEGIN
+IF @ClientActive = 8
+BEGIN
+  SELECT 'eight'
+END
+ELSE IF @ClientActive = 66
+BEGIN
+  SELECT 'sixtysix'
+END
+END"""
+        r = trim_procedure(proc, 66)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertIn("IF @ClientActive = 66", sql)
+        self.assertNotIn("ELSE IF", sql)
+        self.assertIn("sixtysix", sql)
+        self.assertNotIn("eight", sql)
+
+
+class SendSalesmanData(unittest.TestCase):
+    """The real OT_SendSalesmanData dump. Client 8 must not keep the
+    123/161 PostedToERP gate; client 123 must keep that gate, IF line included."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = Path(__file__).resolve().parent.parent / "sendsalesmandata.txt"
+        cls.definition = path.read_text(encoding="utf-8", errors="replace")
+
+    def test_client_8_drops_other_client_update(self):
+        r = trim_procedure(self.definition, 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertNotIn(
+            "(@ClientActive=123 and @SalesPersonType=7) or @ClientActive = 161",
+            sql,
+        )
+        self.assertNotIn("set PostedToERP=1", sql)
+        self.assertGreater(r["stats"]["no_match"], 43)
+
+    def test_client_123_keeps_the_gate_and_its_if_line(self):
+        r = trim_procedure(self.definition, 123)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertIn(
+            "(@ClientActive=123 and @SalesPersonType=7) or @ClientActive = 161",
+            sql,
+        )
+        self.assertIn("set PostedToERP=1", sql)
+        self.assertIn("IF (@ClientActive=123", sql)
 
 
 class ApiTrimRoute(unittest.TestCase):
