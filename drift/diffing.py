@@ -17,22 +17,29 @@ _FIRST_AS = re.compile(r"(?i)\bAS\b")
 
 def code_spans(text: str) -> list[tuple[int, int]]:
     """(start, end) offsets of every span of `text` that is NOT inside a
-    '...' string literal or a [...] bracketed identifier (both support
-    doubled-char escaping: '' inside a string, ]] inside a bracket).
-    normalize_sql()/split_param_body() only ever strip comments, collapse
-    whitespace, casefold, or search for the AS split point within these
-    spans -- never inside a literal/identifier, so a default value like
-    N'Status AS Of -- pending' can't corrupt normalization or be mistaken
-    for the real parameter/body boundary (closes the exact gap named in the
-    prior version of this file's own "ponytail" comment). Public (no leading
-    underscore) because scriptgen.py also reuses it to locate the real
-    CREATE keyword past a leading comment (D2a) -- same literal/comment-
-    aware scanning problem, not worth a second implementation."""
+    '...' string literal or a [...] bracketed identifier.
+    Line comments (-- to newline) and block comments (/* to */, non-nesting)
+    are part of these spans; a quote inside a comment must not open a string.
+    Doubled '' / ]] still escape inside real literals/identifiers.
+    normalize_sql()/split_param_body() only scan within these spans -- never
+    inside a literal/identifier. Public because scriptgen.py reuses it."""
     spans = []
     i, n = 0, len(text)
     start = 0
     while i < n:
         ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if ch == "-" and nxt == "-":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i = min(i + 2, n)
+            continue
         if ch in ("'", "["):
             if i > start:
                 spans.append((start, i))
@@ -40,15 +47,15 @@ def code_spans(text: str) -> list[tuple[int, int]]:
             i += 1
             while i < n:
                 if text[i] == close:
-                    if i + 1 < n and text[i + 1] == close:  # doubled = escaped, not a close
+                    if i + 1 < n and text[i + 1] == close:
                         i += 2
                         continue
                     i += 1
                     break
                 i += 1
             start = i
-        else:
-            i += 1
+            continue
+        i += 1
     if start < n:
         spans.append((start, n))
     return spans

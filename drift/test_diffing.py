@@ -1,5 +1,9 @@
 """ponytail: minimal self-check, not a framework. Run: python3.13 test_diffing.py"""
-from diffing import diff_programmable, diff_columns
+from diffing import diff_programmable, diff_columns, code_spans
+
+
+def _joined_code(text: str) -> str:
+    return "".join(text[a:b] for a, b in code_spans(text))
 
 def test_comment_only_not_flagged_as_real():
     a = "CREATE PROCEDURE dbo.X @Y int AS\nBEGIN\n  SELECT 1\nEND"
@@ -101,6 +105,42 @@ def test_bracketed_identifier_named_as_not_split_point():
     b = "CREATE VIEW dbo.X AS\nSELECT [AS], [Other] FROM dbo.T"
     r = diff_programmable(a, b)
     assert r["change_kind"] == "body", r
+
+def test_quote_inside_line_comment_does_not_open_string():
+    text = "ELSE IF @ClientActive = 35 -- 'luxury items\nBEGIN\n SELECT 1\nEND\n"
+    joined = _joined_code(text)
+    assert "BEGIN" in joined
+    assert "END" in joined
+    holes = []
+    last = 0
+    for a, b in code_spans(text):
+        if a > last:
+            holes.append(text[last:a])
+        last = b
+    assert not any("BEGIN" in h for h in holes), holes
+
+
+def test_even_quotes_inside_line_comment_still_leave_following_begin():
+    text = "--set @SendDate = '2017-01-31'\nBEGIN\n SELECT 1\nEND"
+    assert "BEGIN" in _joined_code(text)
+
+
+def test_block_comment_quote_does_not_open_string():
+    text = "SELECT 1 /* 'not a string */\nBEGIN\n SELECT 2\nEND"
+    assert "BEGIN" in _joined_code(text)
+
+
+def test_as_inside_string_literal_still_a_hole():
+    """Regression: real strings remain excluded from code_spans."""
+    text = "CREATE PROCEDURE dbo.X @Y nvarchar(20) = N'Status AS Of' AS\nBEGIN\n SELECT 1\nEND"
+    holes = []
+    last = 0
+    for a, b in code_spans(text):
+        if a > last:
+            holes.append(text[last:a])
+        last = b
+    assert any("Status AS Of" in h for h in holes), holes
+
 
 def test_case_change_inside_literal_is_real_change():
     """Literal content case must be preserved -- casefold() must apply only
