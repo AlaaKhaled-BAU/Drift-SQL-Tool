@@ -42,12 +42,9 @@ _EXTRA_FK_REF_RE = re.compile(r"REFERENCES\s+\[([^\]]+)\]", re.IGNORECASE)
 _PROGRAMMABLE_TYPES = ("P", "V", "FN", "IF", "TF", "TR")
 
 
-def _connect(db_name):
-    return pymssql.connect(
-        server="127.0.0.1", port=config.HOST_PORT,
-        user=config.SA_USER, password=config.SA_PASSWORD,
-        database=db_name, timeout=60, login_timeout=10,
-    )
+def _connect(db_name, side=None):
+    from . import restore
+    return restore.open_connection(side, db_name, timeout=60)
 
 
 def fetch_by_names(cur, query_template: str, names) -> list:
@@ -79,11 +76,11 @@ def fetch_by_names(cur, query_template: str, names) -> list:
     return rows
 
 
-def get_definitions(db_name: str, bare_names: set) -> dict:
+def get_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare object name -> exact CREATE ... source text, for the given names only."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -97,7 +94,7 @@ def get_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_columns(db_name: str, bare_table_names: set) -> dict:
+def get_columns(db_name: str, bare_table_names: set, side=None) -> dict:
     """bare table name -> [{name, type, max_length, precision, scale, nullable,
     is_pk}, ...], for the given tables only. max_length/precision/scale matter:
     a bare type-name compare would miss nvarchar(50) -> nvarchar(4000) or
@@ -105,7 +102,7 @@ def get_columns(db_name: str, bare_table_names: set) -> dict:
     no width/precision info to catch it."""
     if not bare_table_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     out = {name: [] for name in bare_table_names}
     rows = fetch_by_names(
@@ -134,9 +131,9 @@ def get_columns(db_name: str, bare_table_names: set) -> dict:
     return out
 
 
-def get_all_table_names(db_name: str) -> set[str]:
+def get_all_table_names(db_name: str, side=None) -> set[str]:
     """Bare table names on the given database (user tables only)."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor()
     cur.execute("SELECT name FROM sys.tables WHERE is_ms_shipped = 0")
     out = {row[0] for row in cur.fetchall()}
@@ -227,12 +224,12 @@ _SQLPACKAGE_TYPE_BY_OBJTYPE = {
 }
 
 
-def get_definition_hashes(db_name: str) -> dict:
+def get_definition_hashes(db_name: str, side=None) -> dict:
     """bare name -> (SqlPackage-style type label, raw-text SHA256) for every
     programmable object. Cheap: a 32-byte hash per object, not the full text.
     Used only to detect that two definitions differ at all -- structural or
     formatting-only is decided afterward by the caller."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     cur.execute(
         "SELECT o.name, o.type, HASHBYTES('SHA2_256', OBJECT_DEFINITION(o.object_id)) AS h "
@@ -247,11 +244,11 @@ def get_definition_hashes(db_name: str) -> dict:
     return out
 
 
-def get_encrypted_names(db_name: str) -> set:
+def get_encrypted_names(db_name: str, side=None) -> set:
     """Objects whose definition is NULL despite sys.sql_modules having a row --
     WITH ENCRYPTION. These must be flagged 'uncomparable', never silently
     treated as 'same' (PLAN-03 §6 guard)."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     cur.execute(
         "SELECT o.name FROM sys.objects o JOIN sys.sql_modules m ON o.object_id = m.object_id "
@@ -289,7 +286,7 @@ def _rendered_type_ext(type_name, max_length, precision, scale) -> str:
     return type_name
 
 
-def get_index_definitions(db_name: str, bare_names: set) -> dict:
+def get_index_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """"table.index" (qualified) name -> canonical CREATE INDEX text.
 
     D3 Change B (2026-07-27): keyed by table+index, NOT bare index name alone.
@@ -314,7 +311,7 @@ def get_index_definitions(db_name: str, bare_names: set) -> dict:
     seen using more than one filegroup."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -364,7 +361,7 @@ def get_index_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_fk_definitions(db_name: str, bare_names: set) -> dict:
+def get_fk_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare FK name -> canonical ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY text.
 
     D1a (2026-07-26): is_disabled/is_not_trusted/is_not_for_replication added
@@ -377,7 +374,7 @@ def get_fk_definitions(db_name: str, bare_names: set) -> dict:
     no_difference reclassification depends on closing first)."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -421,7 +418,7 @@ def get_fk_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_check_constraint_definitions(db_name: str, bare_names: set) -> dict:
+def get_check_constraint_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare check-constraint name -> canonical text. sys.check_constraints
     already exposes the exact predicate text (like OBJECT_DEFINITION does
     for programmable objects), so this needs no reconstruction.
@@ -431,7 +428,7 @@ def get_check_constraint_definitions(db_name: str, bare_names: set) -> dict:
     validates nothing even though its predicate text is unchanged."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -455,12 +452,12 @@ def get_check_constraint_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_default_constraint_definitions(db_name: str, bare_names: set) -> dict:
+def get_default_constraint_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare default-constraint name -> canonical text (sys.default_constraints
     exposes the exact expression text directly, same as check constraints)."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -477,7 +474,7 @@ def get_default_constraint_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_sequence_definitions(db_name: str, bare_names: set) -> dict:
+def get_sequence_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare sequence name -> canonical CREATE SEQUENCE text.
     start_value/increment/minimum_value/maximum_value are typed sql_variant
     in sys.sequences -- pymssql/FreeTDS doesn't decode that, it comes back as
@@ -491,7 +488,7 @@ def get_sequence_definitions(db_name: str, bare_names: set) -> dict:
     operational difference invisible in start/increment/min/max alone."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -518,12 +515,12 @@ def get_sequence_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_synonym_definitions(db_name: str, bare_names: set) -> dict:
+def get_synonym_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare synonym name -> canonical CREATE SYNONYM text (base_object_name
     IS the definition -- no reconstruction needed)."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(cur, "SELECT name, base_object_name FROM sys.synonyms WHERE name IN ({ph})", bare_names)
     out = {row["name"]: f"CREATE SYNONYM [{row['name']}] FOR {row['base_object_name']};" for row in rows}
@@ -531,7 +528,7 @@ def get_synonym_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_table_type_definitions(db_name: str, bare_names: set) -> dict:
+def get_table_type_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare table-type (TVP) name -> canonical CREATE TYPE ... AS TABLE text.
     Same column reconstruction as get_columns(), against
     sys.table_types.type_table_object_id instead of sys.tables.object_id.
@@ -545,7 +542,7 @@ def get_table_type_definitions(db_name: str, bare_names: set) -> dict:
     valid CREATE TYPE syntax."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -581,11 +578,11 @@ def get_table_type_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_udt_definitions(db_name: str, bare_names: set) -> dict:
+def get_udt_definitions(db_name: str, bare_names: set, side=None) -> dict:
     """bare user-defined scalar type name -> canonical CREATE TYPE ... FROM text."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -602,11 +599,11 @@ def get_udt_definitions(db_name: str, bare_names: set) -> dict:
     return out
 
 
-def get_database_options(db_name: str) -> dict:
+def get_database_options(db_name: str, side=None) -> dict:
     """DB-level collation + compatibility level. A difference here changes
     runtime semantics even when every object's own text is identical
     (qwen-review L-11) -- captured unconditionally, cheap (single row)."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT collation_name, compatibility_level FROM sys.databases WHERE database_id = DB_ID()")
     row = cur.fetchone()
@@ -614,7 +611,7 @@ def get_database_options(db_name: str) -> dict:
     return {"collation": row["collation_name"], "compatibility_level": row["compatibility_level"]}
 
 
-def get_all_module_settings(db_name: str) -> dict:
+def get_all_module_settings(db_name: str, side=None) -> dict:
     """bare name -> (SqlPackage-style type label, {"ansi_nulls": bool,
     "quoted_identifier": bool}) for EVERY programmable object -- a full
     sweep, same shape/reasoning as get_definition_hashes(), NOT scoped to an
@@ -627,7 +624,7 @@ def get_all_module_settings(db_name: str) -> dict:
     surgical battery: without this sweep, an ANSI_NULLS-only flip on an
     otherwise-identical real procedure produced literally zero findings in
     either direction (L-11's actual failure mode, not a hypothetical one)."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     cur.execute(
         "SELECT o.name, o.type, m.uses_ansi_nulls, m.uses_quoted_identifier "

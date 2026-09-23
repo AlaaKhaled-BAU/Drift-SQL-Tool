@@ -22,12 +22,9 @@ from . import config, diffing
 from .inspect_objects import fetch_by_names
 
 
-def _connect(db_name):
-    return pymssql.connect(
-        server="127.0.0.1", port=config.HOST_PORT,
-        user=config.SA_USER, password=config.SA_PASSWORD,
-        database=db_name, timeout=30, login_timeout=10,
-    )
+def _connect(db_name, side=None):
+    from . import restore
+    return restore.open_connection(side, db_name, timeout=30)
 
 
 def _has_change_log(cur) -> bool:
@@ -37,10 +34,10 @@ def _has_change_log(cur) -> bool:
     return cur.fetchone()["n"] > 0
 
 
-def inspect(db_name: str, side_label: str, drifted_bare_names: set, log) -> dict:
+def inspect(db_name: str, side_label: str, drifted_bare_names: set, log, side=None) -> dict:
     """Returns attribution rows for drifted objects, and lost-fix candidates for
     objects that currently look clean but whose logged history disagrees."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
 
     if not _has_change_log(cur):
