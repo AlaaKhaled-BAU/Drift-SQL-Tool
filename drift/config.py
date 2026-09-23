@@ -22,14 +22,12 @@ if not _PW_FILE.exists():
     _PW_FILE.write_text(secrets.token_urlsafe(18) + "aA1!")
 SA_PASSWORD = _PW_FILE.read_text().strip()
 
-# Broad root mounted read-only into the container so RESTORE FROM DISK can see
-# any .bak the user picks via the device browser, not just ones already inside
-# the repo. Must be an ancestor of (or equal to) REPO_ROOT. Changing this value
-# requires the scratch container to be recreated with the new mount -- handled
-# automatically by docker_mgmt.ensure_running() (detects the mismatch, recreates).
-BACKUP_BROWSE_ROOT = Path("/media/alaa/data")
-HOST_MOUNT_SRC = str(BACKUP_BROWSE_ROOT)
+# Legacy read-only bind mount for the scratch container (optional; .bak files are
+# staged with docker cp instead of requiring a host path under this root).
+HOST_MOUNT_SRC = str(WORK_DIR)
 CONTAINER_MOUNT_DST = "/host"
+# app.py browse API still reads this name until Lane C removes the jail.
+BACKUP_BROWSE_ROOT = WORK_DIR
 
 # --- sqlpackage (installed as a dotnet tool; needs a matching runtime side-by-side) ---
 SQLPACKAGE_BIN = os.path.expanduser("~/.dotnet/tools/sqlpackage")

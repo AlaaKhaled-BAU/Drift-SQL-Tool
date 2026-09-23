@@ -24,8 +24,24 @@ DIRECTIONS = ("client_to_105", "105_to_client")
 _UNSET = object()  # recompare()'s "caller didn't pass type_filter at all" marker -- None is meaningful (no filter)
 
 
+def _side_kind(side: dict) -> str:
+    return side.get("kind", "bak")
+
+
 def run_compare(master_path: str, client_path: str, directions: list, log, type_filter: set | None = None,
                 client_active_id=None) -> dict:
+    return run_compare_sides(
+        {"kind": "bak", "path": str(master_path)},
+        {"kind": "bak", "path": str(client_path)},
+        directions,
+        log,
+        type_filter=type_filter,
+        client_active_id=client_active_id,
+    )
+
+
+def run_compare_sides(master_side: dict, client_side: dict, directions: list, log,
+                      type_filter: set | None = None, client_active_id=None) -> dict:
     directions = [d for d in directions if d in DIRECTIONS] or ["client_to_105"]
 
     run_id = f"{int(time.time())}_{uuid.uuid4().hex[:6]}"
@@ -37,47 +53,75 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
     def phase(name):
         return _Phase(name, timings)
 
-    # .resolve() to an absolute path up front: recompare() re-checks this
-    # path later, quite possibly from a different process with a different
-    # cwd (the GUI server vs. a one-off script) -- a relative path that
-    # happened to resolve correctly at run_compare time would wrongly read
-    # as "backup no longer exists" at recompare time otherwise.
-    master_path, client_path = Path(master_path).resolve(), Path(client_path).resolve()
+    master_bak = _side_kind(master_side) == "bak"
+    client_bak = _side_kind(client_side) == "bak"
+    master_path = Path(master_side["path"]).resolve() if master_bak else None
+    client_path = Path(client_side["path"]).resolve() if client_bak else None
     db_master, db_client = f"drift_master_{run_id}", f"drift_client_{run_id}"
     # D5d: recompare()'s cache key -- a source .bak changing (re-exported,
     # replaced) after this run must never silently serve a stale re-compare.
     # Stat'd up front, once; the file is only ever read (restore), never
     # written, for the rest of this run.
+    def _bak_cache_entry(p: Path) -> dict:
+        return {"path": str(p), "size": p.stat().st_size, "mtime": p.stat().st_mtime}
+
     bak_cache_key = {
-        "master": {"path": str(master_path), "size": master_path.stat().st_size, "mtime": master_path.stat().st_mtime},
-        "client": {"path": str(client_path), "size": client_path.stat().st_size, "mtime": client_path.stat().st_mtime},
+        "master": _bak_cache_entry(master_path) if master_bak else {"live": master_side.get("database", "")},
+        "client": _bak_cache_entry(client_path) if client_bak else {"live": client_side.get("database", "")},
     }
 
-    log(f"=== run {run_id}: Master(105)={master_path.name}  Client={client_path.name}  "
+    master_label = master_path.name if master_bak else master_side.get("database", "live")
+    client_label = client_path.name if client_bak else client_side.get("database", "live")
+    log(f"=== run {run_id}: Master(105)={master_label}  Client={client_label}  "
         f"directions={directions} ===")
-    with phase("docker_start"):
-        docker_mgmt.ensure_running(log)
+    if master_bak or client_bak:
+        with phase("docker_start"):
+            docker_mgmt.ensure_running(log)
 
     with phase("restore"):
-        header_master = restore.restore_backup(master_path, db_master, log)
-        header_client = restore.restore_backup(client_path, db_client, log)
+        header_master = (
+            restore.restore_backup(master_path, db_master, log) if master_bak else {}
+        )
+        header_client = (
+            restore.restore_backup(client_path, db_client, log) if client_bak else {}
+        )
 
     with phase("script_to_sql"):
-        sql_master = convert.script_to_sql(db_master, run_dir / f"master__{_safe(master_path)}.sql", log)
-        sql_client = convert.script_to_sql(db_client, run_dir / f"client__{_safe(client_path)}.sql", log)
+        master_sql_name = f"master__{_safe(master_path) if master_bak else _safe(Path(master_label))}.sql"
+        client_sql_name = f"client__{_safe(client_path) if client_bak else _safe(Path(client_label))}.sql"
+        sql_master = convert.script_to_sql(
+            db_master, run_dir / master_sql_name, log, side=master_side if not master_bak else None,
+        )
+        sql_client = convert.script_to_sql(
+            db_client, run_dir / client_sql_name, log, side=client_side if not client_bak else None,
+        )
 
     with phase("extract_dacpac"):
-        dacpac_master = extract.extract_dacpac(db_master, run_dir / "master.dacpac", log)
-        dacpac_client = extract.extract_dacpac(db_client, run_dir / "client.dacpac", log)
+        if master_bak:
+            dacpac_master = extract.extract_dacpac(db_master, run_dir / "master.dacpac", log)
+        else:
+            dacpac_master = extract.extract_dacpac_source(master_side, run_dir / "master.dacpac", log)
+        if client_bak:
+            dacpac_client = extract.extract_dacpac(db_client, run_dir / "client.dacpac", log)
+        else:
+            dacpac_client = extract.extract_dacpac_source(client_side, run_dir / "client.dacpac", log)
 
     exclusions = compare.load_exclusions()
 
     with phase("hash_sweep"):
         log("hashing all programmable objects on both sides (for formatting-only detection)...")
-        master_hashes = inspect_objects.get_definition_hashes(db_master)
-        client_hashes = inspect_objects.get_definition_hashes(db_client)
-        master_encrypted = inspect_objects.get_encrypted_names(db_master)
-        client_encrypted = inspect_objects.get_encrypted_names(db_client)
+        master_hashes = inspect_objects.get_definition_hashes(
+            db_master, side=master_side if not master_bak else None,
+        )
+        client_hashes = inspect_objects.get_definition_hashes(
+            db_client, side=client_side if not client_bak else None,
+        )
+        master_encrypted = inspect_objects.get_encrypted_names(
+            db_master, side=master_side if not master_bak else None,
+        )
+        client_encrypted = inspect_objects.get_encrypted_names(
+            db_client, side=client_side if not client_bak else None,
+        )
         if master_encrypted or client_encrypted:
             log(f"  WARNING: {len(master_encrypted)} encrypted object(s) on master, "
                 f"{len(client_encrypted)} on client -- these cannot be compared, flagged not skipped")
@@ -88,8 +132,12 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
         # hash sweep above -- it would never enter the changed-object set
         # otherwise. Confirmed live: without this, a settings-only flip on an
         # unchanged real procedure produced zero findings in either direction.
-        master_all_settings = inspect_objects.get_all_module_settings(db_master)
-        client_all_settings = inspect_objects.get_all_module_settings(db_client)
+        master_all_settings = inspect_objects.get_all_module_settings(
+            db_master, side=master_side if not master_bak else None,
+        )
+        client_all_settings = inspect_objects.get_all_module_settings(
+            db_client, side=client_side if not client_bak else None,
+        )
 
     if type_filter:
         log(f"  ⚠ TYPE FILTER ACTIVE: only {sorted(type_filter)} -- this run is PARTIAL, "
@@ -144,12 +192,14 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
 
     with phase("capture_definitions"):
         log(f"capturing definitions for {len(detail_names)} changed object(s) before teardown...")
-        master_defs = inspect_objects.get_definitions(db_master, detail_names)
-        client_defs = inspect_objects.get_definitions(db_client, detail_names)
-        master_cols = inspect_objects.get_columns(db_master, detail_names)
-        client_cols = inspect_objects.get_columns(db_client, detail_names)
-        master_table_names = inspect_objects.get_all_table_names(db_master)
-        client_table_names = inspect_objects.get_all_table_names(db_client)
+        m_side = master_side if not master_bak else None
+        c_side = client_side if not client_bak else None
+        master_defs = inspect_objects.get_definitions(db_master, detail_names, side=m_side)
+        client_defs = inspect_objects.get_definitions(db_client, detail_names, side=c_side)
+        master_cols = inspect_objects.get_columns(db_master, detail_names, side=m_side)
+        client_cols = inspect_objects.get_columns(db_client, detail_names, side=c_side)
+        master_table_names = inspect_objects.get_all_table_names(db_master, side=m_side)
+        client_table_names = inspect_objects.get_all_table_names(db_client, side=c_side)
 
         # Extended object types (qwen-review L-3): not sys.sql_modules objects,
         # so OBJECT_DEFINITION can't see them -- each getter reconstructs a
@@ -167,8 +217,8 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
             inspect_objects.get_table_type_definitions, inspect_objects.get_udt_definitions,
         )
         for getter in extended_getters:
-            master_defs.update(getter(db_master, detail_names))
-            client_defs.update(getter(db_client, detail_names))
+            master_defs.update(getter(db_master, detail_names, side=m_side))
+            client_defs.update(getter(db_client, detail_names, side=c_side))
         log(f"  extended-type capture: {len(master_defs)} master / {len(client_defs)} client definition(s) total "
             f"(programmable + index/FK/constraint/sequence/synonym/table-type/UDT)")
 
@@ -180,8 +230,8 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
         # expect.
         master_settings = {n: v[1] for n, v in master_all_settings.items() if n in detail_names}
         client_settings = {n: v[1] for n, v in client_all_settings.items() if n in detail_names}
-        master_db_options = inspect_objects.get_database_options(db_master)
-        client_db_options = inspect_objects.get_database_options(db_client)
+        master_db_options = inspect_objects.get_database_options(db_master, side=m_side)
+        client_db_options = inspect_objects.get_database_options(db_client, side=c_side)
         db_options_match = master_db_options == client_db_options
         if not db_options_match:
             log(f"  WARNING: database options differ -- master={master_db_options} client={client_db_options} "
@@ -190,10 +240,12 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
     with phase("blast_radius"):
         log(f"resolving callers for {len(detail_names)} changed object(s) "
             f"(sys.sql_expression_dependencies -- exact, not the regex-derived vault graph)...")
-        master_callers = dependencies.get_callers(db_master, detail_names)
-        client_callers = dependencies.get_callers(db_client, detail_names)
-        dynamic_sql_count = len(dependencies.get_dynamic_sql_users(db_master) |
-                                 dependencies.get_dynamic_sql_users(db_client))
+        master_callers = dependencies.get_callers(db_master, detail_names, side=m_side)
+        client_callers = dependencies.get_callers(db_client, detail_names, side=c_side)
+        dynamic_sql_count = len(
+            dependencies.get_dynamic_sql_users(db_master, side=m_side)
+            | dependencies.get_dynamic_sql_users(db_client, side=c_side)
+        )
         resolved = sum(1 for n in detail_names if n in master_callers or n in client_callers)
         log(f"  callers resolved for {resolved}/{len(detail_names)} changed object(s)")
         if dynamic_sql_count:
@@ -203,8 +255,8 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
 
     with phase("attribution"):
         log("cross-referencing ProcedureChangeLog for attribution + lost-fix check...")
-        cl_master = changelog.inspect(db_master, "master", detail_names, log)
-        cl_client = changelog.inspect(db_client, "client", detail_names, log)
+        cl_master = changelog.inspect(db_master, "master", detail_names, log, side=m_side)
+        cl_client = changelog.inspect(db_client, "client", detail_names, log, side=c_side)
         attribution_by_name = {}
         for row in cl_master["attribution"] + cl_client["attribution"]:
             attribution_by_name.setdefault(row["object"], []).append(row)
@@ -263,13 +315,19 @@ def run_compare(master_path: str, client_path: str, directions: list, log, type_
                         cl_master["lost_fixes"] + cl_client["lost_fixes"])
 
     with phase("teardown"):
-        restore.drop_database(db_master, log)
-        restore.drop_database(db_client, log)
+        if master_bak:
+            restore.drop_database(db_master, log)
+        if client_bak:
+            restore.drop_database(db_client, log)
 
     timings["total"] = round(time.time() - t_run_start, 1)
 
     meta = {
-        "run_id": run_id, "master_path": str(master_path), "client_path": str(client_path),
+        "run_id": run_id,
+        "master_path": str(master_path) if master_bak else "",
+        "client_path": str(client_path) if client_bak else "",
+        "master_side": master_side,
+        "client_side": client_side,
         "header_master": header_master, "header_client": header_client,
         "directions": directions,
         "trigger_present": {"master": cl_master["trigger_present"], "client": cl_client["trigger_present"]},

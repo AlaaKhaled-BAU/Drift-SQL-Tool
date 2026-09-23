@@ -1,4 +1,5 @@
 """RESTORE a .bak into the scratch container as a live, queryable database."""
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -16,17 +17,46 @@ def _connect(database=None, autocommit=True):
     )
 
 
-def host_path_to_container_path(host_path: Path) -> str:
+def open_connection(side: dict | None, scratch_db: str, autocommit=True, timeout=60):
+    """Scratch DB for kind=bak; direct SQL auth to live server for kind=live."""
+    if side and side.get("kind") == "live":
+        port = int(side.get("port") or 1433)
+        return pymssql.connect(
+            server=side["server"],
+            port=port,
+            user=side["user"],
+            password=side["password"],
+            database=side["database"],
+            autocommit=autocommit,
+            timeout=timeout,
+            login_timeout=10,
+        )
+    return pymssql.connect(
+        server="127.0.0.1",
+        port=config.HOST_PORT,
+        user=config.SA_USER,
+        password=config.SA_PASSWORD,
+        database=scratch_db,
+        autocommit=autocommit,
+        timeout=timeout,
+        login_timeout=10,
+    )
+
+
+def stage_bak_in_container(host_path: Path, log) -> str:
+    """Copy a host .bak into the scratch container; return the in-container path."""
     host_path = host_path.resolve()
-    try:
-        rel = host_path.relative_to(config.BACKUP_BROWSE_ROOT)
-    except ValueError as e:
-        raise ValueError(
-            f"{host_path} is outside the mounted browse root, so the scratch container "
-            f"can't see it (only {config.BACKUP_BROWSE_ROOT} is mounted in -- widen "
-            f"BACKUP_BROWSE_ROOT in config.py to cover it)."
-        ) from e
-    return f"{config.CONTAINER_MOUNT_DST}/{rel.as_posix()}"
+    container_path = f"/tmp/{host_path.name}"
+    log(f"staging {host_path.name} into container {config.CONTAINER_NAME}...")
+    r = subprocess.run(
+        ["docker", "cp", str(host_path), f"{config.CONTAINER_NAME}:{container_path}"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"docker cp failed for {host_path.name}:\n{r.stderr[-1500:]}")
+    log(f"  staged at {container_path}")
+    return container_path
 
 
 def _poll_restore_progress(db_name, log, stop_event):
@@ -50,7 +80,7 @@ def _poll_restore_progress(db_name, log, stop_event):
 
 def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
     """Restore bak_host_path as db_name. Returns backup header info (version, date)."""
-    container_path = host_path_to_container_path(bak_host_path)
+    container_path = stage_bak_in_container(bak_host_path, log)
     conn = _connect()
     cur = conn.cursor(as_dict=True)
 

@@ -23,20 +23,17 @@ from . import config
 from .inspect_objects import fetch_by_names
 
 
-def _connect(db_name):
-    return pymssql.connect(
-        server="127.0.0.1", port=config.HOST_PORT,
-        user=config.SA_USER, password=config.SA_PASSWORD,
-        database=db_name, timeout=60, login_timeout=10,
-    )
+def _connect(db_name, side=None):
+    from . import restore
+    return restore.open_connection(side, db_name, timeout=60)
 
 
-def get_callers(db_name: str, bare_names: set) -> dict:
+def get_callers(db_name: str, bare_names: set, side=None) -> dict:
     """bare object name -> {"callers": [distinct caller names], "unresolved": n}
     for every name in bare_names that something in this database references."""
     if not bare_names:
         return {}
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     rows = fetch_by_names(
         cur,
@@ -59,13 +56,13 @@ def get_callers(db_name: str, bare_names: set) -> dict:
     return {name: {"callers": sorted(v["callers"]), "unresolved": v["unresolved"]} for name, v in out.items()}
 
 
-def get_dynamic_sql_users(db_name: str) -> set:
+def get_dynamic_sql_users(db_name: str, side=None) -> set:
     """Procs that use EXEC(@sql)/sp_executesql -- a coarse but honest flag:
     dependency edges FROM these objects are unreliable (dynamic SQL is
     invisible to sys.sql_expression_dependencies), so a "0 callers" result
     for an object referenced only from inside one of these should be read as
     "0 callers found", not "confirmed 0 callers"."""
-    conn = _connect(db_name)
+    conn = _connect(db_name, side)
     cur = conn.cursor(as_dict=True)
     cur.execute(
         "SELECT o.name FROM sys.sql_modules m JOIN sys.objects o ON m.object_id = o.object_id "

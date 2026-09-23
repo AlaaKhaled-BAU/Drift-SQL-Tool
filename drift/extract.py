@@ -1,13 +1,47 @@
 """Live DB -> .dacpac (schema-only, parsed object model) via sqlpackage Extract."""
 import subprocess
+from pathlib import Path
 
 from . import config
 
 
-def extract_dacpac(db_name: str, out_path, log) -> str:
-    log(f"extracting schema of [{db_name}] to {out_path.name}...")
+def _run_extract(cmd, database_label: str, log, out_path) -> str:
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=config.sqlpackage_env())
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"sqlpackage Extract failed for [{database_label}]:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}"
+        )
+    log(f"  extracted {Path(out_path).name}")
+    return str(out_path)
+
+
+def extract_dacpac_source(source: dict, out_path, log) -> str:
+    """Extract schema from a caller-supplied SQL Server (live target)."""
+    server = source["server"]
+    port = int(source.get("port") or 1433)
+    database = source["database"]
+    log(f"extracting schema of [{database}] from {server},{port} to {Path(out_path).name}...")
     cmd = [
-        config.SQLPACKAGE_BIN, "/Action:Extract",
+        config.SQLPACKAGE_BIN,
+        "/Action:Extract",
+        f"/SourceServerName:{server},{port}",
+        f"/SourceDatabaseName:{database}",
+        f"/SourceUser:{source['user']}",
+        f"/SourcePassword:{source['password']}",
+        "/SourceTrustServerCertificate:True",
+        f"/TargetFile:{out_path}",
+        "/p:ExtractAllTableData=false",
+        "/p:VerifyExtraction=false",
+    ]
+    return _run_extract(cmd, database, log, out_path)
+
+
+def extract_dacpac(db_name: str, out_path, log) -> str:
+    """Extract from the scratch container (127.0.0.1:HOST_PORT)."""
+    log(f"extracting schema of [{db_name}] to {Path(out_path).name}...")
+    cmd = [
+        config.SQLPACKAGE_BIN,
+        "/Action:Extract",
         f"/SourceServerName:127.0.0.1,{config.HOST_PORT}",
         f"/SourceDatabaseName:{db_name}",
         f"/SourceUser:{config.SA_USER}",
@@ -17,8 +51,4 @@ def extract_dacpac(db_name: str, out_path, log) -> str:
         "/p:ExtractAllTableData=false",
         "/p:VerifyExtraction=false",
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=config.sqlpackage_env())
-    if r.returncode != 0:
-        raise RuntimeError(f"sqlpackage Extract failed for [{db_name}]:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
-    log(f"  extracted {out_path.name}")
-    return str(out_path)
+    return _run_extract(cmd, db_name, log, out_path)
