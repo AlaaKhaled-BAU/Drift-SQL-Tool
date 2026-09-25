@@ -1,8 +1,10 @@
 work/
 __pycache__/
 *.pyc
+.pytest_cache/
+venv_desktop/
+.env
 
-# Legacy VB SQL Compare reference binaries (docs/*.md stay tracked)
+# Legacy SQL Compare binaries (reference markdown lives under docs/legacy/sql-compare/)
+SQL Compare/
 SQL Compare.zip
-SQL Compare/*
-!SQL Compare/*.md

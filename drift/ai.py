@@ -89,7 +89,7 @@ def ask_about_finding(finding: dict, timeout: int = 40) -> dict:
     """
     key = config.openrouter_key()
     if not key:
-        return {"ok": False, "error": "No OpenRouter key configured (drift-tool/work/.openrouter_key missing)."}
+        return {"ok": False, "error": "No OpenRouter key configured (set OPENROUTER_API_KEY)."}
 
     user_prompt = build_prompt(finding)
     errors = []
@@ -122,7 +122,7 @@ def test_connection(timeout: int = 20) -> dict:
     that something in the chain responds right now."""
     key = config.openrouter_key()
     if not key:
-        return {"ok": False, "error": "No key configured at drift-tool/work/.openrouter_key."}
+        return {"ok": False, "error": "No key configured (set OPENROUTER_API_KEY)."}
     errors = []
     for model in MODEL_CHAIN:
         try:

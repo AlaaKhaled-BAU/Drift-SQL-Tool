@@ -1,8 +1,8 @@
 """pytest path bootstrap for drift-tool.
 
-Legacy modules under drift/ use flat imports (`import ai`). Newer tests use
-`from drift import …` and `from app import …`, which need the repo root on
-sys.path. Both layouts must work for `python3.13 -m pytest drift/ -q`.
+Engine modules under drift/ use flat imports in a few legacy scripts.
+Tests use `from drift import …` and `from app import …` with the app root on
+sys.path.
 """
 import sys
 from pathlib import Path

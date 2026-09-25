@@ -1,8 +1,6 @@
 """Master(105)-vs-Client DB drift tool. Flask + SSE log stream + a two-workspace
 (Client->105 / 105->Client) compare, drill-down, review, and safe apply-script flow.
-See drift-tool/PLAN.md (v2) and drift-tool/PLAN-V3-usability-git-ai.md (usability,
-change explorer, AI triage) for the design this implements.
-"""
+See docs/ARCHITECTURE.md."""
 import io
 import json
 import queue
@@ -1648,4 +1646,4 @@ def api_package_zip(run_id, direction):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5057, debug=False, threaded=True)
+    app.run(host="127.0.0.1", port=5057, debug=False, threaded=True)

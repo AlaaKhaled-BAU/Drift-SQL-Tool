@@ -4,10 +4,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ROOT/.env"
+  set +a
+fi
+
 # Prefer the 3.12 venv: system PyGObject matches that interpreter.
 CANDIDATES=(
   "$ROOT/venv_desktop/bin/python"
-  /media/alaa/data/olives/apps/drift-tool/venv_desktop/bin/python
   python3.12
   python3.13
   python3

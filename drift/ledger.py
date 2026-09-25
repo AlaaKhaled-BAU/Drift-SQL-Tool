@@ -30,8 +30,7 @@ except ImportError:  # allows `python3.13 test_ledger.py` to run standalone --
     import config    # same plain-import fallback header as scriptgen.py etc.
 
 
-# Default location lives in the gitignored work/ dir alongside every other
-# run artifact (same convention as OUTPUT_DIR / .mssql_pw in config.py).
+# Default location lives in the gitignored work/ dir alongside OUTPUT_DIR.
 LEDGER_FILE = config.WORK_DIR / "ledger.jsonl"
 
 

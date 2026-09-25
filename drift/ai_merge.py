@@ -103,7 +103,7 @@ def propose_merge(master_def: str, client_def: str, delta_statements: list,
     always has something to show."""
     key = config.deepseek_key()
     if not key:
-        return {"ok": False, "error": "No DeepSeek key configured (drift-tool/work/.deepseek_key missing)."}
+        return {"ok": False, "error": "No DeepSeek key configured (set DEEPSEEK_API_KEY)."}
     if not delta_statements:
         return {"ok": False, "error": "No delta statements to merge -- nothing changed at the body level."}
     if len(master_def.encode("utf-8")) > _MAX_MASTER_DEF_BYTES:
@@ -142,7 +142,7 @@ def test_connection(timeout: int = 20) -> dict:
     finding. Mirrors ai.test_connection's shape/purpose for this module."""
     key = config.deepseek_key()
     if not key:
-        return {"ok": False, "error": "No key configured at drift-tool/work/.deepseek_key."}
+        return {"ok": False, "error": "No key configured (set DEEPSEEK_API_KEY)."}
     try:
         content = _call(key, 'Reply with exactly: {"ok": true}', timeout, system=_PING_SYSTEM_PROMPT, max_tokens=30)
         return {"ok": True, "model": config.DEEPSEEK_MODEL, "sample": content.strip()[:100]}
