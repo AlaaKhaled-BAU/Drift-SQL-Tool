@@ -1313,8 +1313,13 @@ def api_diff_preview():
     reading them from a finding's sidecar files."""
     body = request.get_json(force=True)
     left, right = body.get("left", ""), body.get("right", "")
-    rich = diff_render.render_split_diff(left, right)
-    return jsonify({"kind": "text", "view": "split", **rich})
+    view = body.get("view") or "split"
+    if view == "unified":
+        rich = diff_render.render_rich_diff(left, right)
+    else:
+        view = "split"
+        rich = diff_render.render_split_diff(left, right)
+    return jsonify({"kind": "text", "view": view, **rich})
 
 
 @app.get("/api/ai_merge/test")

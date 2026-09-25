@@ -102,17 +102,16 @@ def _mask_literals_and_comments(text: str) -> str:
     """Blank string/bracket spans AND comments with equal-length spaces --
     keyword scanning and depth tracking must never fire on a keyword that
     only appears inside a literal (e.g. a default value N'BEGIN work order')
-    or a comment. Offsets stay valid against the original text."""
-    out = list(text)
-    covered = set()
+    or a comment. Offsets stay valid against the original text.
+
+    Same bytes as copying code_spans and space-filling the rest; does not
+    allocate a set of every index (that dominated trim time on large procs).
+    """
+    n = len(text)
+    out = [" "] * n
     for start, end in diffing.code_spans(text):
-        covered.update(range(start, end))
-    for i, ch in enumerate(text):
-        if i not in covered:
-            out[i] = " "
-    masked = "".join(out)
-    masked = diffing.mask_comments(masked)
-    return masked
+        out[start:end] = text[start:end]
+    return diffing.mask_comments("".join(out))
 
 
 def _strip_outer_begin_end(body: str) -> tuple:

@@ -112,7 +112,49 @@ def test_split_diff_pads_none_on_the_side_with_no_counterpart():
     insert_rows = [row for row in rows if row["tag"] == "insert"]
     assert len(insert_rows) == 1
     assert insert_rows[0]["left"] is None
-    assert insert_rows[0]["right"] == {"text": "SELECT 2"}
+    assert insert_rows[0]["right"]["text"] == "SELECT 2"
+    assert insert_rows[0]["right"]["ln"] == 2
+
+
+def test_split_and_unified_carry_line_numbers():
+    a = "A\nB\nC"
+    b = "A\nX\nC"
+    split = render_split_diff(a, b, context=3)
+    rows = [row for h in split["hunks"] if not h["collapsed"] for row in h["lines"]]
+    replace = next(row for row in rows if row["tag"] == "replace")
+    assert replace["left"]["ln"] == 2
+    assert replace["right"]["ln"] == 2
+    unified = render_rich_diff(a, b, context=3)
+    ops = _lines(unified["hunks"])
+    rep = next(op for op in ops if op["tag"] == "replace")
+    assert rep["left_ln"] == 2 and rep["right_ln"] == 2
+
+
+def test_blank_lines_and_spacing_are_not_changes():
+    """Extra newlines / indent must not show as +/- (Pair screenshot)."""
+    a = "SELECT 1\n\nSELECT 2\nEND"
+    b = "SELECT 1\nSELECT  2\n\n\nEND"
+    split = render_split_diff(a, b, context=3)
+    rows = [row for h in split["hunks"] if not h["collapsed"] for row in h["lines"]]
+    tags = [row["tag"] for row in rows]
+    assert tags == ["equal", "equal", "equal"], tags
+    assert not any((row.get("right") or {}).get("text", "").strip() == "" for row in rows if row["tag"] == "insert")
+    unified = render_rich_diff(a, b)
+    assert all(op["tag"] == "equal" for op in _lines(unified["hunks"]))
+
+
+def test_real_text_change_still_shows_with_original_line_numbers():
+    a = "print 'end of send'\n\nEXITPRO:"
+    b = "print 'here is the edit'\nprint 'e'\n\n\nEXITPRO:"
+    split = render_split_diff(a, b, context=3)
+    rows = [row for h in split["hunks"] if not h["collapsed"] for row in h["lines"]]
+    tags = [row["tag"] for row in rows]
+    assert "replace" in tags or "delete" in tags
+    assert "insert" in tags
+    assert not any(row["tag"] in ("insert", "delete") and not ((row.get("left") or row.get("right") or {}).get("text") or "").strip() for row in rows)
+    exit_row = next(row for row in rows if row["tag"] == "equal" and "EXITPRO" in (row["left"]["text"]))
+    assert exit_row["left"]["ln"] == 3
+    assert exit_row["right"]["ln"] == 5
 
 
 def _col(name, type_, max_length=0, precision=0, scale=0, nullable=True, is_pk=False):

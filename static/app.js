@@ -90,13 +90,21 @@ function normalizeTrimLine(line) {
 }
 
 function classifyTrimSourceLines(source, trimmedSql, harvest) {
-  const trimmedBlob = trimmedSql || "";
-  const harvestBlob = (harvest || []).map(h => h.body || "").join("\n");
+  const trimmedSet = new Set(
+    (trimmedSql || "").split("\n").map(normalizeTrimLine).filter(Boolean)
+  );
+  const harvestSet = new Set();
+  for (const h of harvest || []) {
+    for (const line of (h.body || "").split("\n")) {
+      const n = normalizeTrimLine(line);
+      if (n) harvestSet.add(n);
+    }
+  }
   return (source || "").split("\n").map(raw => {
     const norm = normalizeTrimLine(raw);
     if (!norm) return { raw, kind: "plain" };
-    if (trimmedBlob.includes(norm)) return { raw, kind: "kept" };
-    if (harvestBlob.includes(norm)) return { raw, kind: "trimmed" };
+    if (trimmedSet.has(norm)) return { raw, kind: "kept" };
+    if (harvestSet.has(norm)) return { raw, kind: "trimmed" };
     return { raw, kind: "plain" };
   });
 }
@@ -1198,7 +1206,7 @@ function scrollDiffToText(direction, findingId, searchText) {
   if (!searchText) return;
   const container = document.getElementById(`richdiff_${direction}_${findingId}`);
   if (!container) return;
-  for (const el of container.querySelectorAll(".rdiff-line .txt, .rdiff-cell")) {
+  for (const el of container.querySelectorAll(".rdiff-line .txt, .rdiff-txt, .rdiff-cell")) {
     if (el.textContent.includes(searchText)) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.classList.add("stmt-highlight");
@@ -1219,11 +1227,14 @@ async function loadRichDiff(direction, findingId) {
     : body.view === "split" ? renderSplitDiffHtml(body) : renderRichDiffHtml(body));
   if (body.kind === "columns") mountBackfillInputs(direction, findingId, body);
   el.querySelectorAll(".rdiff-collapsed").forEach(marker => marker.addEventListener("click", () => {
-    const omittedMsg = `<span class="txt hint">(context lines omitted for width - open the raw .diff download if needed)</span>`;
     marker.outerHTML = marker.classList.contains("rdiff-collapsed-split")
-      ? `<div class="rdiff-row equal"><div class="rdiff-cell left equal">${omittedMsg}</div><div class="rdiff-cell right equal"></div></div>`
-      : `<div class="rdiff-line equal"><span class="gut"></span>${omittedMsg}</div>`;
+      ? `<div class="rdiff-row equal"><div class="rdiff-cell left equal">${rdiffLn("")}<span class="rdiff-txt hint">(context lines omitted — click does not restore them)</span></div><div class="rdiff-cell right equal">${rdiffLn("")}<span class="rdiff-txt"></span></div></div>`
+      : `<div class="rdiff-line equal">${rdiffLn("")}${rdiffLn("")}<span class="gut"></span><span class="txt hint">(context lines omitted)</span></div>`;
   }));
+}
+
+function rdiffLn(n) {
+  return `<span class="rdiff-ln">${n == null || n === "" ? "" : n}</span>`;
 }
 
 function renderWords(words) {
@@ -1238,12 +1249,12 @@ function renderRichDiffHtml(body) {
       continue;
     }
     for (const op of hunk.lines) {
-      if (op.tag === "equal") html += `<div class="rdiff-line equal"><span class="gut"> </span><span class="txt">${escapeHtml(op.text)}</span></div>`;
-      else if (op.tag === "delete") html += `<div class="rdiff-line delete"><span class="gut">−</span><span class="txt">${escapeHtml(op.text)}</span></div>`;
-      else if (op.tag === "insert") html += `<div class="rdiff-line insert"><span class="gut">+</span><span class="txt">${escapeHtml(op.text)}</span></div>`;
+      if (op.tag === "equal") html += `<div class="rdiff-line equal">${rdiffLn(op.left_ln)}${rdiffLn(op.right_ln)}<span class="gut"> </span><span class="txt">${escapeHtml(op.text)}</span></div>`;
+      else if (op.tag === "delete") html += `<div class="rdiff-line delete">${rdiffLn(op.left_ln)}${rdiffLn("")}<span class="gut">−</span><span class="txt">${escapeHtml(op.text)}</span></div>`;
+      else if (op.tag === "insert") html += `<div class="rdiff-line insert">${rdiffLn("")}${rdiffLn(op.right_ln)}<span class="gut">+</span><span class="txt">${escapeHtml(op.text)}</span></div>`;
       else if (op.tag === "replace") {
-        html += `<div class="rdiff-line replace-old"><span class="gut">−</span><span class="txt">${renderWords(op.master_words)}</span></div>`;
-        html += `<div class="rdiff-line replace-new"><span class="gut">+</span><span class="txt">${renderWords(op.client_words)}</span></div>`;
+        html += `<div class="rdiff-line replace-old">${rdiffLn(op.left_ln)}${rdiffLn("")}<span class="gut">−</span><span class="txt">${renderWords(op.master_words)}</span></div>`;
+        html += `<div class="rdiff-line replace-new">${rdiffLn("")}${rdiffLn(op.right_ln)}<span class="gut">+</span><span class="txt">${renderWords(op.client_words)}</span></div>`;
       }
     }
   }
@@ -1257,8 +1268,10 @@ function renderRichDiffHtml(body) {
  * direct children of the .rdiff-split grid -- that's what keeps every row's
  * left/right pair aligned into the same two columns without any JS-side
  * width math. */
-function renderSplitDiffHtml(body) {
-  let html = `<div class="rdiff-split">`;
+function renderSplitDiffHtml(body, labels) {
+  const leftLabel = (labels && labels.left) || "Master (105)";
+  const rightLabel = (labels && labels.right) || "Client";
+  let html = `<div class="rdiff-split"><div class="rdiff-split-head"><span>${escapeHtml(leftLabel)}</span><span>${escapeHtml(rightLabel)}</span></div>`;
   for (const hunk of body.hunks) {
     if (hunk.collapsed) {
       html += `<div class="rdiff-collapsed rdiff-collapsed-split">⋯ ${hunk.count} unchanged line(s) ⋯</div>`;
@@ -1272,10 +1285,13 @@ function renderSplitDiffHtml(body) {
 }
 
 function renderSplitCell(side, tag, pos) {
-  if (side === null) return `<div class="rdiff-cell ${pos} empty"></div>`;
+  if (side === null) {
+    return `<div class="rdiff-cell ${pos} empty">${rdiffLn("")}<span class="rdiff-sign"></span><span class="rdiff-txt"></span></div>`;
+  }
   const content = side.words ? renderWords(side.words) : escapeHtml(side.text);
   const cellTag = tag === "replace" ? (pos === "left" ? "replace-old" : "replace-new") : tag;
-  return `<div class="rdiff-cell ${pos} ${cellTag}">${content}</div>`;
+  const sign = tag === "equal" ? "" : (pos === "left" ? "−" : "+");
+  return `<div class="rdiff-cell ${pos} ${cellTag}">${rdiffLn(side.ln)}<span class="rdiff-sign">${sign}</span><span class="rdiff-txt">${content}</span></div>`;
 }
 
 function renderColumnGrid(body) {
@@ -1439,7 +1455,7 @@ async function renderMergeDiff(direction, findingId, masterDef, proposedDef) {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ left: masterDef, right: proposedDef }),
   });
-  el.innerHTML = ok ? renderSplitDiffHtml(body) : `<div class="hint">diff preview unavailable</div>`;
+  el.innerHTML = ok ? renderSplitDiffHtml(body, { left: "Current 105", right: "Proposed" }) : `<div class="hint">diff preview unavailable</div>`;
 }
 
 async function acceptMerge(direction, findingId) {
@@ -1942,9 +1958,60 @@ document.getElementById("pkgDownloadZip")?.addEventListener("click", () => {
   window.location.href = `/api/run/${CURRENT_RUN_ID}/${dir}/package.zip`;
 });
 
+const HUGE_PASTE = new WeakMap();
+const PASTE_PREVIEW_LINES = 40;
+
+function editorValue(el) {
+  if (!el) return "";
+  return HUGE_PASTE.get(el) ?? el.value ?? "";
+}
+
+function setPasteHint(el, msg) {
+  const hint = document.getElementById(`${el.id}Hint`);
+  if (!hint) return;
+  hint.textContent = msg || "";
+  hint.hidden = !msg;
+}
+
+function pastePreview(text) {
+  return (text || "").split("\n").slice(0, PASTE_PREVIEW_LINES).join("\n");
+}
+
+function rememberPaste(el, text) {
+  HUGE_PASTE.set(el, text);
+  const n = text.split("\n").length;
+  setPasteHint(el, `${n.toLocaleString()} lines in memory (${Math.round(text.length / 1024)} KB) — Trim / Pair uses the full paste.`);
+}
+
+function bindFastPaste(el) {
+  if (!el) return;
+  el.addEventListener("paste", (e) => {
+    const clip = e.clipboardData?.getData("text/plain") || "";
+    if (clip.length < 8000) {
+      HUGE_PASTE.delete(el);
+      setPasteHint(el, "");
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    rememberPaste(el, clip);
+    el.value = pastePreview(clip);
+  });
+  el.addEventListener("input", () => {
+    const full = HUGE_PASTE.get(el);
+    if (!full) return;
+    const fullLines = full.split("\n");
+    const headN = Math.min(PASTE_PREVIEW_LINES, fullLines.length);
+    const newHead = el.value.split("\n");
+    rememberPaste(el, newHead.concat(fullLines.slice(headN)).join("\n"));
+  });
+}
+
+["trimSource", "pairMaster", "pairClient"].forEach(id => bindFastPaste(document.getElementById(id)));
+
 document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
   const btn = document.getElementById("trimRunBtn");
-  const source = document.getElementById("trimSource").value;
+  const source = editorValue(document.getElementById("trimSource"));
   const split = document.getElementById("trimSplit");
   const trimOut = document.getElementById("trimOut");
   const trimOriginal = document.getElementById("trimOriginal");
@@ -2153,6 +2220,64 @@ document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
 });
 
 let LAST_PAIR_COPY_SQL = "";
+let LAST_PAIR_LEFT = "";
+let LAST_PAIR_RIGHT = "";
+let LAST_PAIR_IDENTICAL = false;
+let PAIR_DIFF_VIEW = "split";
+
+function pairDiffStats(hunks) {
+  let removed = 0, added = 0, changed = 0;
+  for (const hunk of hunks || []) {
+    if (hunk.collapsed) continue;
+    for (const row of hunk.lines || []) {
+      if (row.tag === "delete") removed += 1;
+      else if (row.tag === "insert") added += 1;
+      else if (row.tag === "replace") changed += 1;
+    }
+  }
+  return { removed, added, changed };
+}
+
+function wirePairCollapsed(container) {
+  container.querySelectorAll(".rdiff-collapsed").forEach(marker => marker.addEventListener("click", () => {
+    marker.outerHTML = marker.classList.contains("rdiff-collapsed-split")
+      ? `<div class="rdiff-row equal"><div class="rdiff-cell left equal">${rdiffLn("")}<span class="rdiff-txt hint">(unchanged lines folded)</span></div><div class="rdiff-cell right equal">${rdiffLn("")}<span class="rdiff-txt"></span></div></div>`
+      : `<div class="rdiff-line equal">${rdiffLn("")}${rdiffLn("")}<span class="gut"></span><span class="txt hint">(unchanged lines folded)</span></div>`;
+  }));
+}
+
+async function renderPairDiff() {
+  const mount = document.getElementById("pairDiff");
+  if (!mount || LAST_PAIR_IDENTICAL) return;
+  const { ok, body } = await getJSON("/api/diff_preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ left: LAST_PAIR_LEFT, right: LAST_PAIR_RIGHT, view: PAIR_DIFF_VIEW }),
+  });
+  if (!ok) {
+    mount.innerHTML = `<div class="hint">${escapeHtml(body.error || "diff unavailable")}</div>`;
+    return;
+  }
+  const stats = pairDiffStats(body.hunks);
+  const status = document.getElementById("pairResultStatus");
+  if (status) {
+    status.className = "pair-status differs";
+    status.textContent = `${stats.changed} changed, ${stats.added} added, ${stats.removed} removed  ·  Master (105) vs Client`;
+  }
+  mount.innerHTML = PAIR_DIFF_VIEW === "unified"
+    ? renderRichDiffHtml(body)
+    : renderSplitDiffHtml(body, { left: "Master (105)", right: "Client" });
+  wirePairCollapsed(mount);
+}
+
+document.getElementById("pairViewToggle")?.querySelectorAll(".view-toggle-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    PAIR_DIFF_VIEW = btn.dataset.view;
+    document.getElementById("pairViewToggle").querySelectorAll(".view-toggle-btn").forEach(b =>
+      b.classList.toggle("active", b === btn));
+    renderPairDiff();
+  });
+});
 
 function switchTrimSubtab(sub) {
   document.querySelectorAll(".trim-subtab").forEach(btn => {
@@ -2172,10 +2297,16 @@ document.getElementById("pairRunBtn")?.addEventListener("click", async () => {
   const btn = document.getElementById("pairRunBtn");
   const lens = document.querySelector('input[name="pairLens"]:checked')?.value || "full";
   const clientActiveId = document.getElementById("pairClientActiveId")?.value;
-  const left_def = document.getElementById("pairMaster")?.value || "";
-  const right_def = document.getElementById("pairClient")?.value || "";
-  const preview = document.getElementById("pairPreview");
+  const left_def = editorValue(document.getElementById("pairMaster"));
+  const right_def = editorValue(document.getElementById("pairClient"));
+  const resultEl = document.getElementById("pairResult");
+  const statusEl = document.getElementById("pairResultStatus");
+  const legendEl = document.getElementById("pairLegend");
+  const toggleEl = document.getElementById("pairViewToggle");
+  const mount = document.getElementById("pairDiff");
   const copyBtn = document.getElementById("pairCopyBtn");
+  const kindEl = document.getElementById("pairCopyKind");
+  if (resultEl) resultEl.hidden = false;
   setBusy("Comparing pair…", btn);
   try {
     const { ok, body } = await getJSON("/api/proc_lens", {
@@ -2190,17 +2321,39 @@ document.getElementById("pairRunBtn")?.addEventListener("click", async () => {
       }),
     });
     if (!ok) {
-      if (preview) preview.textContent = body.reason || body.error || "proc_lens failed";
       LAST_PAIR_COPY_SQL = "";
+      LAST_PAIR_LEFT = "";
+      LAST_PAIR_RIGHT = "";
       if (copyBtn) copyBtn.disabled = true;
+      if (statusEl) { statusEl.className = "pair-status error"; statusEl.textContent = body.reason || body.error || "Compare failed"; }
+      if (legendEl) legendEl.hidden = true;
+      if (toggleEl) toggleEl.hidden = true;
+      if (mount) mount.innerHTML = "";
+      if (kindEl) kindEl.textContent = "";
       return;
     }
-    const show = body.diff_unified || body.preview_right || body.preview_left || "(no diff text)";
-    if (preview) preview.textContent = show;
-    const kindEl = document.getElementById("pairCopyKind");
-    if (kindEl) kindEl.textContent = body.copy_sql ? `copy_kind: ${body.copy_kind || "alter"}` : "";
+    LAST_PAIR_LEFT = body.preview_left || "";
+    LAST_PAIR_RIGHT = body.preview_right || "";
+    LAST_PAIR_IDENTICAL = !!body.identical;
     LAST_PAIR_COPY_SQL = body.copy_sql || "";
     if (copyBtn) copyBtn.disabled = !LAST_PAIR_COPY_SQL || body.copy_kind === "none";
+    if (kindEl) {
+      kindEl.textContent = LAST_PAIR_COPY_SQL
+        ? "Copy pastes CREATE OR ALTER onto the client only — 105 is never written."
+        : "";
+    }
+    if (body.identical) {
+      if (statusEl) { statusEl.className = "pair-status match"; statusEl.textContent = "These match under this lens."; }
+      if (legendEl) legendEl.hidden = true;
+      if (toggleEl) toggleEl.hidden = true;
+      if (mount) {
+        mount.innerHTML = `<div class="pair-identical">No text difference after the selected lens. Line-by-line compare is empty on purpose — not a missing result.</div>`;
+      }
+      return;
+    }
+    if (legendEl) legendEl.hidden = false;
+    if (toggleEl) toggleEl.hidden = false;
+    await renderPairDiff();
   } finally {
     clearBusy(btn);
   }

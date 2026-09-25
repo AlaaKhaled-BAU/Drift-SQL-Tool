@@ -47,7 +47,9 @@
       </nav>
       <section class="block trimmer-panel glass-panel" id="trimSinglePane" data-trim-sub="trim">
         <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
-        <textarea id="trimSource" rows="18" class="trim-source" placeholder="Paste CREATE PROCEDURE …"></textarea>
+        <textarea id="trimSource" rows="12" class="trim-source" placeholder="Paste CREATE PROCEDURE …"
+          spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+        <p class="paste-status hint" id="trimSourceHint" hidden></p>
         <button type="button" id="trimRunBtn">Trim to this client</button>
         <div id="trimSplit" class="trim-split" hidden>
           <div class="trim-split-col">
@@ -78,10 +80,26 @@
           <button type="button" id="pairRunBtn">Compare pair</button>
         </div>
         <div class="trim-pair-grid">
-          <label>Master (105) definition<textarea id="pairMaster" rows="16" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
-          <label>Client definition<textarea id="pairClient" rows="16" class="trim-source" placeholder="CREATE PROCEDURE …"></textarea></label>
+          <label>Master (105) definition<textarea id="pairMaster" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
+            spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+            <p class="paste-status hint" id="pairMasterHint" hidden></p></label>
+          <label>Client definition<textarea id="pairClient" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
+            spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+            <p class="paste-status hint" id="pairClientHint" hidden></p></label>
         </div>
-        <pre id="pairPreview" class="trim-out"></pre>
+        <section class="pair-result" id="pairResult" hidden>
+          <div class="pair-result-bar">
+            <div id="pairResultStatus" class="pair-status" role="status"></div>
+            <div class="diff-view-toggle" id="pairViewToggle" hidden>
+              <button type="button" class="view-toggle-btn active" data-view="split">Side by side</button>
+              <button type="button" class="view-toggle-btn" data-view="unified">Inline</button>
+            </div>
+          </div>
+          <p id="pairLegend" class="pair-legend hint" hidden>
+            Red is only on Master (105). Green is only on Client. Yellow marks the words that changed on a line.
+          </p>
+          <div id="pairDiff" class="pair-diff"></div>
+        </section>
         <div class="drift-copy-row">
           <span id="pairCopyKind" class="hint"></span>
           <button type="button" id="pairCopyBtn" class="ghost sm" disabled>Copy ALTER (client only)</button>

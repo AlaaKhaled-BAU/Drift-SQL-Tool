@@ -276,9 +276,14 @@ tr.finding-row td:first-child { display: flex; align-items: center; gap: 8px; }
  * a change that isn't there (or hides one that is). Applies to every code
  * cell in both the unified (.txt) and split (.rdiff-cell) renderers -- this
  * was a pre-existing bug in the unified view alone before D4 added split. */
-.rdiff-line .txt, .rdiff-cell { direction: ltr; unicode-bidi: plaintext; }
+.rdiff-line .txt, .rdiff-cell, .rdiff-txt { direction: ltr; unicode-bidi: plaintext; }
 .rdiff { background: var(--surface-0); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; font-size: 12px; }
 .rdiff-line { display: flex; }
+.rdiff-ln {
+  width: 40px; flex: none; text-align: right; padding: 1px 8px 1px 4px;
+  color: var(--text-faint); user-select: none; font-variant-numeric: tabular-nums;
+  background: var(--surface-1); border-right: 1px solid var(--border-soft);
+}
 .rdiff-line .gut { width: 22px; flex: none; text-align: center; color: var(--text-faint); user-select: none; }
 .rdiff-line .txt { flex: 1; white-space: pre-wrap; word-break: break-word; padding: 1px 8px 1px 2px; }
 .rdiff-line.equal .txt { color: var(--text-dim); }
@@ -300,16 +305,28 @@ tr.finding-row td:first-child { display: flex; align-items: center; gap: 8px; }
 .view-toggle-btn:hover { background: var(--surface-3); }
 .view-toggle-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--text); }
 .rdiff-split { display: grid; grid-template-columns: 1fr 1fr; background: var(--surface-0); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden; font-size: 12px; }
+.rdiff-split-head {
+  grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr;
+  background: var(--surface-1); border-bottom: 1px solid var(--border-soft);
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.rdiff-split-head span { padding: 8px 12px; }
+.rdiff-split-head span:first-child { border-right: 1px solid var(--border-soft); }
 /* `display: contents` unwraps .rdiff-row so its two .rdiff-cell children
  * become direct items of the .rdiff-split grid -- every row's left/right
  * pair lands in the same two columns automatically, no JS width math. */
 .rdiff-row { display: contents; }
-.rdiff-cell { padding: 1px 8px; white-space: pre-wrap; word-break: break-word; border-right: 1px solid var(--border-soft); overflow-x: auto; }
+.rdiff-cell { display: flex; align-items: flex-start; min-width: 0; padding: 0; border-right: 1px solid var(--border-soft); overflow-x: auto; }
 .rdiff-cell.right { border-right: none; }
-.rdiff-cell.equal { color: var(--text-dim); }
+.rdiff-sign { width: 16px; flex: none; text-align: center; user-select: none; padding-top: 1px; }
+.rdiff-txt { flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-word; padding: 1px 8px 1px 2px; }
+.rdiff-cell.equal .rdiff-txt { color: var(--text-dim); }
 .rdiff-cell.empty { background: var(--surface-1); }
 .rdiff-cell.delete, .rdiff-cell.replace-old { background: rgba(255,135,135,.07); }
+.rdiff-cell.delete .rdiff-sign, .rdiff-cell.replace-old .rdiff-sign { color: var(--red); }
 .rdiff-cell.insert, .rdiff-cell.replace-new { background: rgba(95,224,160,.07); }
+.rdiff-cell.insert .rdiff-sign, .rdiff-cell.replace-new .rdiff-sign { color: var(--green); }
 .rdiff-collapsed-split { grid-column: 1 / -1; text-align: center; color: var(--text-faint); font-size: 11px; padding: 5px; cursor: pointer; background: var(--surface-1); border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
 .rdiff-collapsed-split:hover { color: var(--text-dim); }
 
@@ -477,10 +494,13 @@ tr.finding-row.row-approved:hover {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 .trim-source {
-  min-height: 280px; background: var(--surface-1);
+  min-height: 220px; max-height: 280px; height: 280px;
+  overflow: auto; white-space: pre; overflow-wrap: normal; word-break: normal;
+  background: var(--surface-1);
   border: 1px solid var(--border-soft); border-radius: var(--radius);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  padding: 12px; font-size: 12.5px; line-height: 1.5; resize: vertical;
+  padding: 12px; font-size: 12.5px; line-height: 1.45; resize: vertical;
+  field-sizing: fixed;
 }
 .trim-source:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.25); }
 .trim-split {
@@ -525,7 +545,20 @@ tr.finding-row.row-approved:hover {
 .trim-pair-grid > label {
   display: flex; flex-direction: column; min-width: 0; font-size: 12px; color: var(--text-dim);
 }
-.trim-pair-grid textarea { min-height: 280px; width: 100%; margin: 8px 0 0; }
+.pair-result {
+  margin-top: 18px; padding: 14px 16px 16px;
+  background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: var(--radius);
+}
+.pair-result-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 8px; }
+.pair-result-bar .diff-view-toggle { margin: 0; }
+.pair-status { font-size: 13.5px; font-weight: 650; }
+.pair-status.match { color: var(--green); }
+.pair-status.differs { color: var(--amber); }
+.pair-status.error { color: var(--red); }
+.pair-legend { margin: 0 0 10px; }
+.pair-identical { text-align: center; padding: 32px 16px; color: var(--text-dim); font-size: 13.5px; }
+.pair-diff { max-height: min(70vh, 640px); overflow: auto; }
+.paste-status { margin: 4px 0 8px; }
 .trimmer-panel textarea.trim-source { width: 100%; margin: 10px 0; font-family: inherit; }
 .drift-preview {
   background: var(--surface-1); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);

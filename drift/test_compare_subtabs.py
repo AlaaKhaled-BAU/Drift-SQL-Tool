@@ -39,7 +39,8 @@ class TestCompareSubtabs(unittest.TestCase):
     def test_trimmer_work_bar_and_split_markup(self):
         html = self.client.get("/").data.decode("utf-8")
         self.assertIn('id="workBar"', html)
-        self.assertIn('id="trimSplit"', html)
+        self.assertIn('id="trimSource"', html)
+        self.assertIn('wrap="off"', html)
         self.assertIn('id="trimOriginal"', html)
         self.assertIn('id="trimOut"', html)
         self.assertNotIn('id="trimHarvest"', html)
@@ -60,6 +61,8 @@ class TestCompareSubtabs(unittest.TestCase):
             "trimPairPane",
             "pairMaster",
             "pairClient",
+            "pairResult",
+            "pairDiff",
             "liveMasterServer",
             "db_master",
             "db_client",

@@ -15,6 +15,23 @@ import re
 _WORD_RE = re.compile(r"\S+|\s+")
 
 
+def _line_key(line: str) -> str:
+    """Collapse whitespace for matching only. Display still uses the original line."""
+    return " ".join((line or "").split())
+
+
+def _content_lines(text: str) -> list[dict]:
+    """Non-blank lines with original 1-based numbers. Blank/whitespace-only
+    lines are not edits in T-SQL review (same as git -w / --ignore-blank-lines)."""
+    rows = []
+    for i, line in enumerate((text or "").splitlines(), start=1):
+        key = _line_key(line)
+        if not key:
+            continue
+        rows.append({"ln": i, "text": line, "key": key})
+    return rows
+
+
 def render_rich_diff(master_def: str, client_def: str, context: int = 3) -> dict:
     """Returns {"hunks": [...]}.
 
@@ -28,30 +45,42 @@ def render_rich_diff(master_def: str, client_def: str, context: int = 3) -> dict
 
     Word entries are {"text": str, "changed": bool}.
     """
-    master_lines = (master_def or "").splitlines()
-    client_lines = (client_def or "").splitlines()
-    sm = difflib.SequenceMatcher(a=master_lines, b=client_lines, autojunk=False)
+    master_rows = _content_lines(master_def)
+    client_rows = _content_lines(client_def)
+    sm = difflib.SequenceMatcher(
+        a=[r["key"] for r in master_rows],
+        b=[r["key"] for r in client_rows],
+        autojunk=False,
+    )
 
     ops = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
-            ops.extend({"tag": "equal", "text": line} for line in master_lines[i1:i2])
+            for k in range(i2 - i1):
+                left, right = master_rows[i1 + k], client_rows[j1 + k]
+                ops.append({"tag": "equal", "text": left["text"], "left_ln": left["ln"], "right_ln": right["ln"]})
         elif tag == "delete":
-            ops.extend({"tag": "delete", "text": line} for line in master_lines[i1:i2])
+            for row in master_rows[i1:i2]:
+                ops.append({"tag": "delete", "text": row["text"], "left_ln": row["ln"]})
         elif tag == "insert":
-            ops.extend({"tag": "insert", "text": line} for line in client_lines[j1:j2])
+            for row in client_rows[j1:j2]:
+                ops.append({"tag": "insert", "text": row["text"], "right_ln": row["ln"]})
         elif tag == "replace":
-            m_block, c_block = master_lines[i1:i2], client_lines[j1:j2]
-            # Same-index lines within a replace block are treated as "this line
-            # changed" (git/GitHub convention) and get word-level highlighting;
-            # any leftover unpaired lines (block lengths differ) are plain
-            # delete/insert -- there's no sensible line to pair them against.
+            m_block, c_block = master_rows[i1:i2], client_rows[j1:j2]
             paired = min(len(m_block), len(c_block))
             for k in range(paired):
-                master_words, client_words = _word_pair(m_block[k], c_block[k])
-                ops.append({"tag": "replace", "master_words": master_words, "client_words": client_words})
-            ops.extend({"tag": "delete", "text": line} for line in m_block[paired:])
-            ops.extend({"tag": "insert", "text": line} for line in c_block[paired:])
+                master_words, client_words = _word_pair(m_block[k]["text"], c_block[k]["text"])
+                ops.append({
+                    "tag": "replace",
+                    "master_words": master_words,
+                    "client_words": client_words,
+                    "left_ln": m_block[k]["ln"],
+                    "right_ln": c_block[k]["ln"],
+                })
+            for row in m_block[paired:]:
+                ops.append({"tag": "delete", "text": row["text"], "left_ln": row["ln"]})
+            for row in c_block[paired:]:
+                ops.append({"tag": "insert", "text": row["text"], "right_ln": row["ln"]})
 
     return {"hunks": _group_into_hunks(ops, context)}
 
@@ -119,27 +148,44 @@ def render_split_diff(master_def: str, client_def: str, context: int = 3) -> dic
 
     Identical SequenceMatcher opcode walk as render_rich_diff -- this is a
     presentation-shape difference only, never a second detection path."""
-    master_lines = (master_def or "").splitlines()
-    client_lines = (client_def or "").splitlines()
-    sm = difflib.SequenceMatcher(a=master_lines, b=client_lines, autojunk=False)
+    master_rows = _content_lines(master_def)
+    client_rows = _content_lines(client_def)
+    sm = difflib.SequenceMatcher(
+        a=[r["key"] for r in master_rows],
+        b=[r["key"] for r in client_rows],
+        autojunk=False,
+    )
 
     rows = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
-            rows.extend({"tag": "equal", "left": {"text": line}, "right": {"text": line}}
-                        for line in master_lines[i1:i2])
+            for k in range(i2 - i1):
+                left, right = master_rows[i1 + k], client_rows[j1 + k]
+                rows.append({
+                    "tag": "equal",
+                    "left": {"text": left["text"], "ln": left["ln"]},
+                    "right": {"text": right["text"], "ln": right["ln"]},
+                })
         elif tag == "delete":
-            rows.extend({"tag": "delete", "left": {"text": line}, "right": None} for line in master_lines[i1:i2])
+            for row in master_rows[i1:i2]:
+                rows.append({"tag": "delete", "left": {"text": row["text"], "ln": row["ln"]}, "right": None})
         elif tag == "insert":
-            rows.extend({"tag": "insert", "left": None, "right": {"text": line}} for line in client_lines[j1:j2])
+            for row in client_rows[j1:j2]:
+                rows.append({"tag": "insert", "left": None, "right": {"text": row["text"], "ln": row["ln"]}})
         elif tag == "replace":
-            m_block, c_block = master_lines[i1:i2], client_lines[j1:j2]
+            m_block, c_block = master_rows[i1:i2], client_rows[j1:j2]
             paired = min(len(m_block), len(c_block))
             for k in range(paired):
-                master_words, client_words = _word_pair(m_block[k], c_block[k])
-                rows.append({"tag": "replace", "left": {"words": master_words}, "right": {"words": client_words}})
-            rows.extend({"tag": "delete", "left": {"text": line}, "right": None} for line in m_block[paired:])
-            rows.extend({"tag": "insert", "left": None, "right": {"text": line}} for line in c_block[paired:])
+                master_words, client_words = _word_pair(m_block[k]["text"], c_block[k]["text"])
+                rows.append({
+                    "tag": "replace",
+                    "left": {"words": master_words, "ln": m_block[k]["ln"]},
+                    "right": {"words": client_words, "ln": c_block[k]["ln"]},
+                })
+            for row in m_block[paired:]:
+                rows.append({"tag": "delete", "left": {"text": row["text"], "ln": row["ln"]}, "right": None})
+            for row in c_block[paired:]:
+                rows.append({"tag": "insert", "left": None, "right": {"text": row["text"], "ln": row["ln"]}})
 
     return {"hunks": _group_into_hunks(rows, context)}
 
