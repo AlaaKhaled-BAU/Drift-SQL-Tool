@@ -1,11 +1,14 @@
 """Paths, container, and tool locations. Single source of truth."""
 import os
 import secrets
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # drift-tool install root
-# Monorepo: olives/apps/drift-tool → search .bak from repo root. Standalone git root → ROOT.
-REPO_ROOT = ROOT.parent.parent if not (ROOT / ".git").is_dir() else ROOT
+if getattr(sys, "frozen", False):
+    # PyInstaller: data lives beside the exe, not in the temp extract.
+    ROOT = Path(sys.executable).resolve().parent
+else:
+    ROOT = Path(__file__).resolve().parent.parent          # drift-tool install root
 WORK_DIR = ROOT / "work"
 OUTPUT_DIR = WORK_DIR / "output"
 EXCLUDE_FILE = ROOT / "exclude-from-drift.txt"

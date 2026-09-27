@@ -39,21 +39,6 @@ REVIEW_CLIENT_EXTRAS_HEADER = (
 )
 
 
-def find_backups() -> list[dict]:
-    seen, out = set(), []
-    for p in sorted(config.REPO_ROOT.rglob("*.bak")):
-        if ".git" in p.parts:
-            continue
-        if p in seen:
-            continue
-        seen.add(p)
-        out.append({
-            "path": str(p),
-            "label": f"{p.relative_to(config.REPO_ROOT)}  ({p.stat().st_size / 1_048_576:.0f} MB)",
-        })
-    return out
-
-
 def _load_run(run_id: str):
     """RUNS.get(run_id), falling back to reconstructing from disk (meta.json +
     each direction's index.json) if the run finished in a prior process
@@ -133,12 +118,7 @@ def _finding_full(run: dict, direction: str, finding_id: str):
 
 @app.get("/")
 def index():
-    return render_template("index.html", backups=find_backups(), type_categories=compare.TYPE_CATEGORIES)
-
-
-@app.get("/api/backups")
-def api_backups():
-    return jsonify(find_backups())
+    return render_template("index.html", type_categories=compare.TYPE_CATEGORIES)
 
 
 @app.get("/api/browse")
