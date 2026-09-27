@@ -132,7 +132,7 @@ def write_workspace(workspace_dir: Path, workspace_label: str, findings: list,
             base = workspace_dir / _ROLE_FOLDER[f["role"]] / _type_folder(f["type"]) / safe
         base.parent.mkdir(parents=True, exist_ok=True)
 
-        rel_path = str(base.relative_to(workspace_dir))
+        rel_path = base.relative_to(workspace_dir).as_posix()
 
         if "diff" in f and f["diff"]:
             (base.with_suffix(".diff")).write_text("\n".join(f["diff"]), encoding="utf-8")

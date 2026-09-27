@@ -8,7 +8,8 @@ from . import config
 
 
 def _run_extract(cmd, database_label: str, log, out_path) -> str:
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=config.sqlpackage_env())
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600, env=config.sqlpackage_env())
     if r.returncode != 0:
         raise RuntimeError(
             f"sqlpackage Extract failed for [{database_label}]:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}"
@@ -21,7 +22,8 @@ def _extract_with_password(cmd, password: str, database_label: str, log, out_pat
     """Keep /SourcePassword off argv (visible in ps); pass it via a 0600 response file."""
     fd, rsp = tempfile.mkstemp(prefix="sqlpackage-", suffix=".rsp")
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(f"/SourcePassword:{password}\n")
         return _run_extract(list(cmd) + [f"@{rsp}"], database_label, log, out_path)

@@ -92,7 +92,7 @@ def load_exclusions() -> list[str]:
     if not config.EXCLUDE_FILE.exists():
         return []
     patterns = []
-    for line in config.EXCLUDE_FILE.read_text().splitlines():
+    for line in config.EXCLUDE_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
             patterns.append(line)
@@ -129,7 +129,8 @@ def run_deploy_report(source_dacpac, target_dacpac, out_path, log) -> str:
         "/TargetDatabaseName:target_db",  # required label even in file-vs-file mode; no live connection made
         f"/OutputPath:{out_path}",
     ] + config.COMPARE_PROFILE
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=config.sqlpackage_env())
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600, env=config.sqlpackage_env())
     if r.returncode != 0:
         combined = r.stdout + "\n" + r.stderr
         if "SQL74502" in combined:

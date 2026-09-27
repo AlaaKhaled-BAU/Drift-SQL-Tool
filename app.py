@@ -1625,5 +1625,39 @@ def api_package_zip(run_id, direction):
                      download_name=f"{run_id}_{direction}_package.zip")
 
 
+_TK_LOCK = threading.Lock()
+
+
+def _pick_bak_tk() -> str | None:
+    """Native file dialog for the Windows exe (and any run without the GTK window)."""
+    with _TK_LOCK:
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+        except Exception as e:  # no display / tkinter missing
+            print(f"[picker] unavailable: {e}")
+            return None
+        try:
+            root.withdraw()
+            root.attributes("-topmost", True)
+            path = filedialog.askopenfilename(
+                parent=root,
+                title="Select SQL Server backup",
+                filetypes=[("SQL Server backups", "*.bak"), ("All files", "*.*")],
+            )
+        finally:
+            root.destroy()
+    return str(Path(path)) if path else None
+
+
 if __name__ == "__main__":
+    import sys
+    import webbrowser
+
+    if _bak_picker is None:
+        register_bak_picker(_pick_bak_tk)
+    if getattr(sys, "frozen", False):
+        threading.Timer(1.5, webbrowser.open, ("http://127.0.0.1:5057/",)).start()
     app.run(host="127.0.0.1", port=5057, debug=False, threaded=True)

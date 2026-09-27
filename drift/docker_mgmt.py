@@ -1,7 +1,6 @@
 """Bring up the scratch SQL Server container used for every restore."""
 import subprocess
 import time
-from pathlib import Path
 
 import pymssql
 
@@ -9,7 +8,7 @@ from . import config
 
 
 def _run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def _container_state():
@@ -17,38 +16,21 @@ def _container_state():
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def _current_mount_source():
-    """The host path actually bind-mounted at CONTAINER_MOUNT_DST right now, or
-    None if the container doesn't exist. Docker mounts are fixed at container
-    creation -- changing config.HOST_MOUNT_SRC (e.g. widening the backup-browse
-    root) has no effect on an already-running container until it's recreated."""
-    r = _run([
-        "docker", "inspect", "-f",
-        "{{range .Mounts}}{{if eq .Destination \"" + config.CONTAINER_MOUNT_DST + "\"}}{{.Source}}{{end}}{{end}}",
-        config.CONTAINER_NAME,
-    ])
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
-
-
 def ensure_running(log):
-    state = _container_state()
-    mounted = _current_mount_source()
-    # Path() comparison normalizes trailing slashes / symlink-free equivalence.
-    if state is not None and mounted is not None and Path(mounted) != Path(config.HOST_MOUNT_SRC):
-        log(f"container's mount ({mounted}) no longer matches configured browse root "
-            f"({config.HOST_MOUNT_SRC}) -- recreating container (scratch DBs only, nothing lost)")
-        _run(["docker", "rm", "-f", config.CONTAINER_NAME])
-        state = None
+    try:
+        state = _container_state()
+    except FileNotFoundError:
+        raise RuntimeError("docker is not installed or not on PATH") from None
 
+    r = None
     if state == "running":
         log(f"scratch SQL Server already running (container {config.CONTAINER_NAME})")
     elif state is not None:
         log(f"container exists but state={state}, starting it")
-        _run(["docker", "start", config.CONTAINER_NAME])
+        r = _run(["docker", "start", config.CONTAINER_NAME])
     else:
-        log(f"creating scratch SQL Server container from {config.CONTAINER_IMAGE} "
-            f"(mount: {config.HOST_MOUNT_SRC} -> {config.CONTAINER_MOUNT_DST})")
-        _run([
+        log(f"creating scratch SQL Server container from {config.CONTAINER_IMAGE}")
+        r = _run([
             "docker", "run", "-d", "--name", config.CONTAINER_NAME,
             "-e", "ACCEPT_EULA=Y",
             "-e", f"MSSQL_SA_PASSWORD={config.SA_PASSWORD}",
@@ -64,9 +46,10 @@ def ensure_running(log):
             # engine sizes its thread pools to match what it's really given.
             "--cpuset-cpus", "0,1",
             "-p", f"{config.HOST_PORT}:1433",
-            "-v", f"{config.HOST_MOUNT_SRC}:{config.CONTAINER_MOUNT_DST}:ro",
             config.CONTAINER_IMAGE,
         ])
+    if r is not None and r.returncode != 0:
+        raise RuntimeError(f"docker failed (is Docker running?):\n{r.stderr[-1500:]}")
     _wait_for_sql(log)
     _disable_parallel_redo(log)
 

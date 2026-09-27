@@ -61,10 +61,10 @@ def _norm(t):
 
 def compute(run_dir: Path, sample_size: int = 40, seed: int = 0) -> dict:
     run_dir = Path(run_dir)
-    meta = json.loads((run_dir / "meta.json").read_text())
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     workspaces = {}
     for d in meta["directions"]:
-        workspaces[d] = json.loads((run_dir / d / "index.json").read_text())
+        workspaces[d] = json.loads((run_dir / d / "index.json").read_text(encoding="utf-8"))
 
     return {
         "run_id": meta["run_id"],

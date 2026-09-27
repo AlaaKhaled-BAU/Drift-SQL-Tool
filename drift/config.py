@@ -1,6 +1,7 @@
 """Paths, container, and tool locations. Single source of truth."""
 import os
 import secrets
+import shutil
 import sys
 from pathlib import Path
 
@@ -12,6 +13,8 @@ else:
 WORK_DIR = ROOT / "work"
 OUTPUT_DIR = WORK_DIR / "output"
 EXCLUDE_FILE = ROOT / "exclude-from-drift.txt"
+if not EXCLUDE_FILE.exists() and hasattr(sys, "_MEIPASS"):
+    EXCLUDE_FILE = Path(sys._MEIPASS) / "exclude-from-drift.txt"
 
 WORK_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -24,28 +27,55 @@ SA_USER = "sa"
 
 
 def _sa_password() -> str:
-    """Scratch-container SA password. Set DRIFT_MSSQL_SA_PASSWORD in the environment
-    (desktop launcher, shell profile, or systemd). If unset, a one-time random
-    password is used for this process only — existing containers created with a
-    different password will not connect until you set the matching env var or
-    remove the container: docker rm -f drift-tool-mssql."""
+    """Scratch-container SA password: DRIFT_MSSQL_SA_PASSWORD if set, else a random
+    one generated once and kept in work/.sa_password so the container created on
+    the first run still accepts it after a restart."""
     env = os.environ.get("DRIFT_MSSQL_SA_PASSWORD", "").strip()
     if env:
         return env
-    return secrets.token_urlsafe(18) + "aA1!"
+    stored = WORK_DIR / ".sa_password"
+    try:
+        saved = stored.read_text(encoding="utf-8").strip()
+        if saved:
+            return saved
+    except OSError:
+        pass
+    pw = secrets.token_urlsafe(18) + "aA1!"
+    stored.write_text(pw, encoding="utf-8")
+    return pw
 
 
 SA_PASSWORD = _sa_password()
 
-# Legacy read-only bind mount for the scratch container (optional; .bak files are
-# staged with docker cp instead of requiring a host path under this root).
-HOST_MOUNT_SRC = str(WORK_DIR)
-CONTAINER_MOUNT_DST = "/host"
+# .bak files are staged into the container with `docker cp`; no bind mount.
 BACKUP_BROWSE_ROOT = WORK_DIR
 
-# --- sqlpackage (installed as a dotnet tool; needs a matching runtime side-by-side) ---
-SQLPACKAGE_BIN = os.path.expanduser("~/.dotnet/tools/sqlpackage")
-DOTNET_ROOT_FOR_SQLPACKAGE = os.path.expanduser("~/.dotnet-8027")
+def _sqlpackage_bin() -> str:
+    """Same tool on Linux and Windows: env override, then the usual dotnet-tool locations."""
+    override = os.environ.get("DRIFT_SQLPACKAGE", "").strip()
+    if override:
+        return override
+    name = "sqlpackage.exe" if os.name == "nt" else "sqlpackage"
+    tool = Path.home() / ".dotnet" / "tools" / name
+    if tool.is_file():
+        return str(tool)
+    return shutil.which("sqlpackage") or str(tool)
+
+
+def _dotnet_root() -> str:
+    """The pinned side-by-side runtime wins, as before; otherwise DOTNET_ROOT or ~/.dotnet."""
+    pinned = Path.home() / ".dotnet-8027"
+    if pinned.is_dir():
+        return str(pinned)
+    override = os.environ.get("DOTNET_ROOT", "").strip()
+    if override:
+        return override
+    return str(Path.home() / ".dotnet")
+
+
+# --- sqlpackage (dotnet tool; needs a matching runtime side-by-side) ---
+SQLPACKAGE_BIN = _sqlpackage_bin()
+DOTNET_ROOT_FOR_SQLPACKAGE = _dotnet_root()
 
 # --- python + mssql-scripter interpreter (packages live under python3.13 user site, not python3) ---
 PYTHON_BIN = "python3.13"
@@ -69,7 +99,9 @@ COMPARE_PROFILE = [
 def sqlpackage_env():
     env = os.environ.copy()
     env["DOTNET_ROOT"] = DOTNET_ROOT_FOR_SQLPACKAGE
-    env["PATH"] = f"{DOTNET_ROOT_FOR_SQLPACKAGE}:{env.get('PATH', '')}"
+    env["PATH"] = os.pathsep.join(
+        p for p in (DOTNET_ROOT_FOR_SQLPACKAGE, env.get("PATH", "")) if p
+    )
     return env
 
 
