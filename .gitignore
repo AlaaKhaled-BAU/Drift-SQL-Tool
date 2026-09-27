@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 venv_desktop/
+.build-venv/
+build/
+dist/
 .env
 
 # Legacy SQL Compare binaries (reference markdown lives under docs/legacy/sql-compare/)

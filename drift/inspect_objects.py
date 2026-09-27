@@ -66,7 +66,7 @@ def fetch_by_names(cur, query_template: str, names) -> list:
     parameterization loop is exactly the kind of logic where two hand-
     copied versions drift out of sync -- measured real cost of that pattern
     elsewhere this session (drift/statements.py's _is_begin_tran bug)."""
-    names = list(names)
+    names = sorted(names)  # a set's order changes per process; results must not
     rows = []
     for i in range(0, len(names), 1000):
         batch = names[i : i + 1000]

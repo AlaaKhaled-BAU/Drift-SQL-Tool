@@ -27,7 +27,18 @@ Requires: Docker (`drift-tool-mssql` scratch SQL Server), `sqlpackage` + .NET ru
 | `DEEPSEEK_API_KEY` | AI merge proposals (optional) |
 | `OPENROUTER_API_KEY` | AI triage on findings (optional) |
 
-Optional: create `apps/drift-tool/.env` with the above; `run-desktop.sh` loads it if present.
+Optional: copy `.env.example` to `.env` beside `app.py` (or beside the exe); it is loaded at startup and real environment variables win.
+
+## Windows exe (same tool, same results)
+
+Needs Python 3.12+, Docker Desktop, and `sqlpackage` (`dotnet tool install -g microsoft.sqlpackage`).
+
+```bat
+build-windows.bat
+dist\DriftTool\DriftTool.exe
+```
+
+Keep the whole `dist\DriftTool` folder together. `work\` (runs, the scratch SA password) and an optional `.env` live beside the exe. Launching it again while it is running just reopens the browser. `./build.sh` builds the same bundle on Linux.
 
 ## Browser mode (secondary)
 

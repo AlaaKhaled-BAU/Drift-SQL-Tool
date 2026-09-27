@@ -10,6 +10,26 @@ if getattr(sys, "frozen", False):
     ROOT = Path(sys.executable).resolve().parent
 else:
     ROOT = Path(__file__).resolve().parent.parent          # drift-tool install root
+
+def _load_dotenv(path: Path) -> None:
+    """KEY=VALUE lines from .env beside the app; real environment variables win."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv(ROOT / ".env")
+
 WORK_DIR = ROOT / "work"
 OUTPUT_DIR = WORK_DIR / "output"
 EXCLUDE_FILE = ROOT / "exclude-from-drift.txt"
@@ -28,21 +48,23 @@ SA_USER = "sa"
 
 def _sa_password() -> str:
     """Scratch-container SA password: DRIFT_MSSQL_SA_PASSWORD if set, else a random
-    one generated once and kept in work/.sa_password so the container created on
+    one generated once and kept in SA_PASSWORD_FILE so the container created on
     the first run still accepts it after a restart."""
     env = os.environ.get("DRIFT_MSSQL_SA_PASSWORD", "").strip()
     if env:
         return env
-    stored = WORK_DIR / ".sa_password"
     try:
-        saved = stored.read_text(encoding="utf-8").strip()
+        saved = SA_PASSWORD_FILE.read_text(encoding="utf-8").strip()
         if saved:
             return saved
     except OSError:
         pass
     pw = secrets.token_urlsafe(18) + "aA1!"
-    stored.write_text(pw, encoding="utf-8")
+    SA_PASSWORD_FILE.write_text(pw, encoding="utf-8")
     return pw
+
+
+SA_PASSWORD_FILE = WORK_DIR / ".mssql_pw"
 
 
 SA_PASSWORD = _sa_password()

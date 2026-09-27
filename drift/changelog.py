@@ -74,7 +74,7 @@ def inspect(db_name: str, side_label: str, drifted_bare_names: set, log, side=No
     # but whose most recent logged NewDefinition disagrees with what's live now.
     cur.execute(
         "SELECT ObjectName, ObjectSchema, MAX(ChangeTime) AS last_change "
-        "FROM dbo.ProcedureChangeLog GROUP BY ObjectName, ObjectSchema"
+        "FROM dbo.ProcedureChangeLog GROUP BY ObjectName, ObjectSchema ORDER BY ObjectSchema, ObjectName"
     )
     latest_per_object = cur.fetchall()
 

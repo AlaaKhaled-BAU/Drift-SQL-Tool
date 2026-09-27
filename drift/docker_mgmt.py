@@ -1,4 +1,5 @@
 """Bring up the scratch SQL Server container used for every restore."""
+import os
 import subprocess
 import time
 
@@ -16,11 +17,28 @@ def _container_state():
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _adopt_container_password(log):
+    """An existing container keeps the SA password it was created with. If that is not
+    ours (password file lost, or created by an older build), use and save the container's."""
+    r = _run(["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", config.CONTAINER_NAME])
+    for line in r.stdout.splitlines():
+        if line.startswith("MSSQL_SA_PASSWORD="):
+            pw = line.split("=", 1)[1]
+            if pw and pw != config.SA_PASSWORD:
+                log("using the SA password the existing scratch container was created with")
+                config.SA_PASSWORD = pw
+                if not os.environ.get("DRIFT_MSSQL_SA_PASSWORD", "").strip():
+                    config.SA_PASSWORD_FILE.write_text(pw, encoding="utf-8")
+            return
+
+
 def ensure_running(log):
     try:
         state = _container_state()
     except FileNotFoundError:
         raise RuntimeError("docker is not installed or not on PATH") from None
+    if state is not None:
+        _adopt_container_password(log)
 
     r = None
     if state == "running":

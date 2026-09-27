@@ -1653,11 +1653,22 @@ def _pick_bak_tk() -> str | None:
 
 
 if __name__ == "__main__":
+    import socket
     import sys
     import webbrowser
 
+    url = "http://127.0.0.1:5057/"
+    frozen = getattr(sys, "frozen", False)
+    with socket.socket() as s:
+        already_running = s.connect_ex(("127.0.0.1", 5057)) == 0
+    if already_running:
+        print(f"Drift Tool is already running at {url}")
+        if frozen:
+            webbrowser.open(url)
+        sys.exit(0)
+
     if _bak_picker is None:
         register_bak_picker(_pick_bak_tk)
-    if getattr(sys, "frozen", False):
-        threading.Timer(1.5, webbrowser.open, ("http://127.0.0.1:5057/",)).start()
+    if frozen:
+        threading.Timer(1.5, webbrowser.open, (url,)).start()
     app.run(host="127.0.0.1", port=5057, debug=False, threaded=True)
