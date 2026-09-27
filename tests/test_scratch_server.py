@@ -100,6 +100,17 @@ class ScratchSettings(unittest.TestCase):
             self.assertEqual(s["server"], "B")
             self.assertEqual(s["source"], "env")
 
+    def test_bad_port_does_not_crash_settings_read(self):
+        p, path = _temp_settings()
+        _write_settings(path, {
+            "mode": "local", "server": "h", "port": "1433x",
+            "auth": "sql", "user": "u", "password": "p",
+        })
+        with p, _clear_scratch_env():
+            self.assertEqual(config.scratch_settings()["port"], 1433)
+        with p, patch.dict("os.environ", {"DRIFT_SCRATCH_SERVER": "h", "DRIFT_SCRATCH_PORT": "nope"}):
+            self.assertEqual(config.scratch_settings()["port"], 1433)
+
     def test_save_blank_password_keeps_saved(self):
         p, path = _temp_settings()
         with p, _clear_scratch_env():

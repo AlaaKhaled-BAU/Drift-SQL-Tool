@@ -1,4 +1,5 @@
 """RESTORE a .bak into the scratch container as a live, queryable database."""
+import os
 import re
 import subprocess
 import threading
@@ -13,8 +14,11 @@ from . import config
 
 def scratch_connect(**extra):
     """All scratch-server connections go through here (Docker, SQL login, or Windows auth)."""
-    kw = config.scratch_connect_kwargs()
-    if "user" not in kw and config.scratch_settings()["mode"] == "local":
+    settings = config.scratch_settings()
+    if settings["mode"] == "local" and settings["auth"] == "windows" and os.name != "nt":
+        raise RuntimeError("Windows authentication is only available when the tool runs on Windows")
+    kw = config.scratch_connect_kwargs(settings)
+    if "user" not in kw and settings["mode"] == "local":
         from . import scratch_odbc
         return scratch_odbc.connect(**kw, **extra)
     return pymssql.connect(**kw, **extra)

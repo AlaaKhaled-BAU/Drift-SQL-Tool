@@ -89,6 +89,21 @@ def _normalize_server(server: str) -> str:
     return head + sep + instance
 
 
+def _port(value, default: int = 1433) -> int:
+    """A bad port must not stop the app from starting."""
+    if value is None or value == "":
+        return default
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        print(f"[settings] ignoring invalid port {value!r}; using {default}")
+        return default
+    if not 1 <= port <= 65535:
+        print(f"[settings] ignoring port {port} outside 1-65535; using {default}")
+        return default
+    return port
+
+
 def scratch_settings() -> dict:
     """Current scratch-server settings, read fresh on every call (cheap: one small file)."""
     if scratch_env_locked():
@@ -96,7 +111,7 @@ def scratch_settings() -> dict:
         return {
             "mode": "local" if server else "docker",
             "server": _normalize_server(server),
-            "port": int(os.environ.get("DRIFT_SCRATCH_PORT", "").strip() or 1433),
+            "port": _port(os.environ.get("DRIFT_SCRATCH_PORT", "").strip()),
             "auth": (os.environ.get("DRIFT_SCRATCH_AUTH", "").strip().lower() or "sql"),
             "user": os.environ.get("DRIFT_SCRATCH_USER", "").strip(),
             "password": os.environ.get("DRIFT_SCRATCH_PASSWORD", ""),
@@ -113,7 +128,7 @@ def scratch_settings() -> dict:
     return {
         "mode": mode,
         "server": _normalize_server(str(data.get("server") or "")),
-        "port": int(data.get("port") or 1433),
+        "port": _port(data.get("port")),
         "auth": data.get("auth") if data.get("auth") in ("sql", "windows") else "sql",
         "user": str(data.get("user") or ""),
         "password": str(data.get("password") or ""),

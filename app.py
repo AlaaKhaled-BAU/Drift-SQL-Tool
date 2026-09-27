@@ -290,10 +290,20 @@ def api_scratch_test():
             return jsonify({"ok": False, "error": str(e)}), 200
         return jsonify({"ok": True, "message": "Docker scratch container is running"})
     saved = config.scratch_settings()
+    raw_port = body.get("port")
+    if raw_port in (None, ""):
+        port = 1433
+    else:
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "port must be a number"}), 200
+        if not 1 <= port <= 65535:
+            return jsonify({"ok": False, "error": "port must be between 1 and 65535"}), 200
     candidate = {
         "mode": "local",
         "server": config._normalize_server(str(body.get("server") or "")),
-        "port": int(body.get("port") or 1433),
+        "port": port,
         "auth": body.get("auth") or "sql",
         "user": str(body.get("user") or "").strip(),
         "password": str(body.get("password") or "") or saved.get("password", ""),
