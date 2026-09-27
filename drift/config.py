@@ -69,6 +69,37 @@ SA_PASSWORD_FILE = WORK_DIR / ".mssql_pw"
 
 SA_PASSWORD = _sa_password()
 
+# --- where .bak files get restored ---
+# Unset: the Docker container above. Set (e.g. "localhost" or "localhost\SQLEXPRESS"):
+# an existing SQL Server on THIS machine; its service reads the .bak straight from disk.
+SCRATCH_SERVER = os.environ.get("DRIFT_SCRATCH_SERVER", "").strip()
+USE_DOCKER = not SCRATCH_SERVER
+SCRATCH_PORT = int(os.environ.get("DRIFT_SCRATCH_PORT", "").strip() or 1433)
+SCRATCH_USER = os.environ.get("DRIFT_SCRATCH_USER", "").strip() or SA_USER
+
+
+def scratch_password() -> str:
+    """Read at call time: docker_mgmt may adopt a different container password."""
+    if USE_DOCKER:
+        return SA_PASSWORD
+    return os.environ.get("DRIFT_SCRATCH_PASSWORD", "")
+
+
+def scratch_connect_kwargs() -> dict:
+    """pymssql server/port/user/password for the scratch SQL Server."""
+    if USE_DOCKER:
+        server = {"server": "127.0.0.1", "port": HOST_PORT}
+    elif "\\" in SCRATCH_SERVER:
+        server = {"server": SCRATCH_SERVER}  # named instance; SQL Browser resolves the port
+    else:
+        server = {"server": SCRATCH_SERVER, "port": SCRATCH_PORT}
+    return {**server, "user": SCRATCH_USER, "password": scratch_password()}
+
+
+def scratch_sqlpackage_server() -> str:
+    kw = scratch_connect_kwargs()
+    return f"{kw['server']},{kw['port']}" if "port" in kw else kw["server"]
+
 # .bak files are staged into the container with `docker cp`; no bind mount.
 BACKUP_BROWSE_ROOT = WORK_DIR
 

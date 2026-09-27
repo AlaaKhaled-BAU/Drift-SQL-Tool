@@ -13,8 +13,7 @@ from . import config
 
 def _connect(database=None, autocommit=True):
     return pymssql.connect(
-        server="127.0.0.1", port=config.HOST_PORT,
-        user=config.SA_USER, password=config.SA_PASSWORD,
+        **config.scratch_connect_kwargs(),
         database=database, autocommit=autocommit, timeout=0, login_timeout=10,
     )
 
@@ -34,10 +33,7 @@ def open_connection(side: dict | None, scratch_db: str, autocommit=True, timeout
             login_timeout=10,
         )
     return pymssql.connect(
-        server="127.0.0.1",
-        port=config.HOST_PORT,
-        user=config.SA_USER,
-        password=config.SA_PASSWORD,
+        **config.scratch_connect_kwargs(),
         database=scratch_db,
         autocommit=autocommit,
         timeout=timeout,
@@ -87,11 +83,32 @@ def _poll_restore_progress(db_name, log, stop_event):
         pass
 
 
+def _server_file_dirs(cur) -> tuple[str, str]:
+    """Where the scratch server keeps data/log files (container or local instance)."""
+    cur.execute(
+        "SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS data_dir, "
+        "CAST(SERVERPROPERTY('InstanceDefaultLogPath') AS nvarchar(4000)) AS log_dir"
+    )
+    row = cur.fetchone() or {}
+
+    def _dir(p):
+        return p if p.endswith(("/", "\\")) else p + ("\\" if "\\" in p else "/")
+
+    data_dir = _dir(row.get("data_dir") or "/var/opt/mssql/data/")
+    log_dir = _dir(row.get("log_dir") or data_dir)
+    return data_dir, log_dir
+
+
 def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
     """Restore bak_host_path as db_name. Returns backup header info (version, date)."""
-    container_path = stage_bak_in_container(bak_host_path, log)
+    if config.USE_DOCKER:
+        container_path = stage_bak_in_container(bak_host_path, log)
+    else:
+        # Local SQL Server: its service account reads the file where it already is.
+        container_path = str(bak_host_path.resolve())
     conn = _connect()
     cur = conn.cursor(as_dict=True)
+    data_dir, log_dir = _server_file_dirs(cur)
 
     log(f"reading backup header: {bak_host_path.name}")
     cur.execute(f"RESTORE HEADERONLY FROM DISK = {_sql_literal(container_path)}")
@@ -108,8 +125,8 @@ def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
         logical = f["LogicalName"]
         is_log = f.get("Type") == "L"
         ext = "ldf" if is_log else "mdf"
-        target = f"/var/opt/mssql/data/{db_name}__{logical}.{ext}"
-        move_clauses.append(f"MOVE '{logical}' TO '{target}'")
+        target = f"{log_dir if is_log else data_dir}{db_name}__{logical}.{ext}"
+        move_clauses.append(f"MOVE {_sql_literal(logical)} TO {_sql_literal(target)}")
     moves_sql = ", ".join(move_clauses)
 
     log(f"restoring {bak_host_path.name} -> database [{db_name}] ({len(files)} file(s))")

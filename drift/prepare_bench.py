@@ -53,8 +53,7 @@ def proc(v66=V66_OLD, gen=GENERIC_OLD, spa=SPARTAN_OLD, tail=SHARED_OLD):
 
 
 def connect(db=None):
-    return pymssql.connect(server="127.0.0.1", port=config.HOST_PORT,
-                           user=config.SA_USER, password=config.SA_PASSWORD,
+    return pymssql.connect(**config.scratch_connect_kwargs(),
                            database=db or "master", autocommit=True, login_timeout=10)
 
 

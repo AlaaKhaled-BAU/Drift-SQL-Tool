@@ -2,7 +2,72 @@
 
 Desktop-first tool to compare Master (105) vs client SQL Server schemas, review drift, and assemble safe apply scripts.
 
-## Run (desktop)
+## Windows
+
+### Where `.bak` files are restored (Docker is not required)
+
+A `.bak` is a backup image, not something the tool can diff directly. For every side you pick as a backup file, the tool restores it into a temporary database on a **scratch SQL Server**, then scripts it, builds `.dacpac` files with SqlPackage, compares, and drops the temporary databases. Rehearse restores the client `.bak` the same way.
+
+On Windows, use the **SQL Server you already have on the machine** as the scratch server. Put this in `.env` next to `DriftTool.exe`:
+
+```ini
+DRIFT_SCRATCH_SERVER=localhost
+DRIFT_SCRATCH_USER=drift
+DRIFT_SCRATCH_PASSWORD=your-password
+```
+
+- Named instance: `DRIFT_SCRATCH_SERVER=localhost\SQLEXPRESS` (the SQL Server Browser service must be running). Non-default port: add `DRIFT_SCRATCH_PORT=1433`.
+- Use a **SQL login** (SQL Server and Windows Authentication mode) with the `dbcreator` role or `sysadmin`, so it can RESTORE and DROP.
+- The SQL Server **service account** must be able to read the `.bak` where it sits (the tool passes the file path to the server; nothing is copied). Local disk folders normally work. For a network share, grant the service account access.
+- Temporary databases are always named `drift_master_<id>`, `drift_client_<id>` or `zz_rehearsal_<id>` and are dropped afterwards, so your own databases are never replaced or removed. The tool does not change server settings.
+- The instance must be the same or a newer SQL Server version than the one that made the backup.
+
+**Docker instead (optional).** If `DRIFT_SCRATCH_SERVER` is not set, the tool uses a Docker container (`drift-tool-mssql` on port 14330), as on Linux. Then Docker Desktop must be running.
+
+**Live-only compares.** If both sides are live servers (no `.bak`), no scratch server is used at all.
+
+### Requirements
+
+| Requirement | Purpose |
+|-------------|---------|
+| **SQL Server** on the machine (Express, Developer or full) | Scratch server for restoring `.bak` files (or Docker Desktop instead) |
+| **.NET SDK or runtime** | Runs `sqlpackage` (schema extract and compare) |
+| **SqlPackage** | `dotnet tool install -g microsoft.sqlpackage` |
+| **Python 3.12+** | Only to **build** the exe (`build-windows.bat`); running the built app does not need Python |
+| **Git** (optional) | To clone/pull this repo |
+
+Copy `.env.example` to `.env` next to `DriftTool.exe` (or `app.py`) and fill it in. See [Environment](#environment) below.
+
+### Build and run (exe)
+
+From the repo folder in **cmd** or **PowerShell**:
+
+```bat
+git pull
+build-windows.bat
+dist\DriftTool\DriftTool.exe
+```
+
+- Keep the entire `dist\DriftTool` folder together (do not move only the `.exe`).
+- `work\` (run output) is created beside the exe; `.env` goes there too.
+- The console shows `using local SQL Server … for restores (no Docker)` when a compare starts, confirming the local instance is used.
+- Double-clicking the exe again while it is already running reopens the browser instead of starting a second server.
+
+### Run from source on Windows (optional)
+
+If you prefer not to use the exe:
+
+```bat
+py -3.12 -m venv venv
+venv\Scripts\pip install -r requirements.txt
+venv\Scripts\python app.py
+```
+
+Then open `http://127.0.0.1:5057` in your browser. Use **Choose .bak…** in the UI for backup paths.
+
+## Linux
+
+### Run (desktop)
 
 ```bash
 ./run-desktop.sh
@@ -19,26 +84,26 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 
 Requires: Docker (`drift-tool-mssql` scratch SQL Server), `sqlpackage` + .NET runtime (see `drift/config.py`), system PyGObject + WebKit2 (`python3-gi`, `gir1.2-webkit2-4.1`).
 
+Build the same one-folder bundle as Windows:
+
+```bash
+./build.sh
+dist/DriftTool/DriftTool
+```
+
 ## Environment
 
 | Variable | Purpose |
 |----------|---------|
-| `DRIFT_MSSQL_SA_PASSWORD` | SA password for the scratch Docker container (set once; recreate container if you change it: `docker rm -f drift-tool-mssql`) |
+| `DRIFT_SCRATCH_SERVER` | Restore `.bak` files on this SQL Server instead of Docker (`localhost`, `localhost\SQLEXPRESS`, …) |
+| `DRIFT_SCRATCH_PORT` | Port for `DRIFT_SCRATCH_SERVER` (default 1433; ignored for named instances) |
+| `DRIFT_SCRATCH_USER` / `DRIFT_SCRATCH_PASSWORD` | SQL login for `DRIFT_SCRATCH_SERVER` (needs `dbcreator` or `sysadmin`) |
+| `DRIFT_MSSQL_SA_PASSWORD` | Docker mode only: SA password for the scratch container (optional; if unset, a password is generated once and stored in `work/.mssql_pw`). If you change it, recreate the container: `docker rm -f drift-tool-mssql` |
+| `DRIFT_SQLPACKAGE` | Full path to `sqlpackage` / `sqlpackage.exe` if it is not under `%USERPROFILE%\.dotnet\tools` |
 | `DEEPSEEK_API_KEY` | AI merge proposals (optional) |
 | `OPENROUTER_API_KEY` | AI triage on findings (optional) |
 
-Optional: copy `.env.example` to `.env` beside `app.py` (or beside the exe); it is loaded at startup and real environment variables win.
-
-## Windows exe (same tool, same results)
-
-Needs Python 3.12+, Docker Desktop, and `sqlpackage` (`dotnet tool install -g microsoft.sqlpackage`).
-
-```bat
-build-windows.bat
-dist\DriftTool\DriftTool.exe
-```
-
-Keep the whole `dist\DriftTool` folder together. `work\` (runs, the scratch SA password) and an optional `.env` live beside the exe. Launching it again while it is running just reopens the browser. `./build.sh` builds the same bundle on Linux.
+Optional: copy `.env.example` to `.env` beside `app.py` or beside `DriftTool.exe`; it is loaded at startup and real environment variables take precedence.
 
 ## Browser mode (secondary)
 
@@ -46,7 +111,7 @@ Keep the whole `dist\DriftTool` folder together. `work\` (runs, the scratch SA p
 ./run.sh
 ```
 
-Opens `http://localhost:5057` in the system browser.
+Opens `http://localhost:5057` in the system browser (Linux).
 
 ## Docs
 
@@ -56,5 +121,5 @@ Opens `http://localhost:5057` in the system browser.
 ## Tests
 
 ```bash
-cd apps/drift-tool && python3.13 -m pytest -q
+python3.13 -m pytest -q
 ```
