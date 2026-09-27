@@ -1687,6 +1687,7 @@ function switchTool(tool) {
   if (shell) shell.classList.add("rail-hidden-on-trimmer");
   if (tool === "compare") switchCompareSubtab(ACTIVE_COMPARE_SUBTAB);
   if (tool === "drift") syncDriftFromRun();
+  if (tool === "settings") loadScratchSettings();
 }
 
 document.querySelectorAll("#toolTabs .tool-tab").forEach(btn =>
@@ -2376,3 +2377,112 @@ switchTool("trimmer");
 switchCompareSubtab("schema");
 updateCompareModeUi();
 loadRunList();
+
+/* ============================== Settings (scratch server) ============================== */
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", ".", "(local)"]);
+
+function scratchForm() {
+  const mode = document.querySelector('input[name="scratchMode"]:checked')?.value || "docker";
+  return {
+    mode,
+    server: document.getElementById("scratchServer").value.trim(),
+    port: document.getElementById("scratchPort").value.trim() || "1433",
+    auth: document.getElementById("scratchAuth").value,
+    user: document.getElementById("scratchUser").value.trim(),
+    password: document.getElementById("scratchPass").value,
+  };
+}
+
+function updateScratchFieldGates() {
+  const f = scratchForm();
+  const local = f.mode === "local";
+  const win = f.auth === "windows";
+  const named = f.server.includes("\\");
+  const host = f.server.split("\\")[0].toLowerCase();
+  document.getElementById("scratchLocalFields").hidden = !local;
+  document.getElementById("scratchPort").disabled = named;
+  document.getElementById("scratchUser").disabled = win;
+  document.getElementById("scratchPass").disabled = win;
+  document.getElementById("scratchWinAuthHint").hidden = !win;
+  document.getElementById("scratchRemoteHint").hidden = !local || !f.server || LOCAL_HOSTS.has(host);
+}
+
+function setScratchStatus(text, isError) {
+  const el = document.getElementById("scratchStatus");
+  el.textContent = text;
+  el.style.color = isError ? "var(--danger, #c0392b)" : "";
+}
+
+async function loadScratchSettings() {
+  let s;
+  try {
+    s = await (await fetch("/api/scratch/settings")).json();
+  } catch (err) {
+    setScratchStatus(String(err), true);
+    return;
+  }
+  document.querySelector(`input[name="scratchMode"][value="${s.mode}"]`).checked = true;
+  document.getElementById("scratchServer").value = s.server || "";
+  document.getElementById("scratchPort").value = s.port || 1433;
+  document.getElementById("scratchAuth").value = s.auth || "sql";
+  document.getElementById("scratchUser").value = s.user || "";
+  const pass = document.getElementById("scratchPass");
+  pass.value = "";
+  pass.placeholder = s.has_password ? "saved (leave blank to keep)" : "";
+  const winOpt = document.querySelector('#scratchAuth option[value="windows"]');
+  winOpt.disabled = !s.windows_auth_available;
+  winOpt.textContent = s.windows_auth_available ? "Windows authentication" : "Windows authentication (Windows only)";
+  const locked = !!s.env_locked;
+  document.getElementById("scratchEnvLocked").hidden = !locked;
+  document.querySelectorAll("#scratchSettings input, #scratchSettings select, #scratchSaveBtn")
+    .forEach(el => { if (el.id !== "scratchTestBtn") el.disabled = locked; });
+  updateScratchFieldGates();
+  if (locked) document.getElementById("scratchSaveBtn").disabled = true;
+  setScratchStatus(s.source === "default" ? "Using Docker (nothing saved yet)." : "", false);
+}
+
+async function testScratchSettings() {
+  setScratchStatus("Testing…", false);
+  let body;
+  try {
+    const resp = await fetch("/api/scratch/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(scratchForm()),
+    });
+    body = await resp.json();
+  } catch (err) {
+    setScratchStatus(String(err), true);
+    return;
+  }
+  if (!body.ok) { setScratchStatus(`Failed: ${body.error}`, true); return; }
+  if (body.message) { setScratchStatus(body.message, false); return; }
+  const parts = [`Connected as ${body.login_name}`, `SQL Server ${body.version} (${body.edition})`];
+  if (body.warning) { setScratchStatus(`${parts.join(" · ")} · WARNING: ${body.warning}`, true); return; }
+  setScratchStatus(`${parts.join(" · ")} · can restore ✓`, false);
+}
+
+async function saveScratchSettings() {
+  setScratchStatus("Saving…", false);
+  let resp, body;
+  try {
+    resp = await fetch("/api/scratch/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(scratchForm()),
+    });
+    body = await resp.json();
+  } catch (err) {
+    setScratchStatus(String(err), true);
+    return;
+  }
+  if (!resp.ok) { setScratchStatus(body.error || `Save failed (${resp.status})`, true); return; }
+  await loadScratchSettings();
+  setScratchStatus("Saved. The next compare uses these settings.", false);
+}
+
+document.querySelectorAll('input[name="scratchMode"]').forEach(r => r.addEventListener("change", updateScratchFieldGates));
+["scratchServer", "scratchAuth"].forEach(id =>
+  document.getElementById(id).addEventListener("input", updateScratchFieldGates));
+document.getElementById("scratchAuth").addEventListener("change", updateScratchFieldGates);
+document.getElementById("scratchTestBtn").addEventListener("click", testScratchSettings);
+document.getElementById("scratchSaveBtn").addEventListener("click", saveScratchSettings);

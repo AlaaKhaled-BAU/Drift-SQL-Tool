@@ -1,3 +1,4 @@
 flask
 pymssql
+pyodbc; sys_platform == "win32"
 sqlglot

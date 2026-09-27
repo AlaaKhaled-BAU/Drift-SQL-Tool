@@ -33,7 +33,7 @@ def _adopt_container_password(log):
 
 
 def ensure_running(log):
-    if not config.USE_DOCKER:
+    if not config.use_docker():
         # The user's own SQL Server: connect only. No trace flags or other global changes.
         log(f"using local SQL Server {config.scratch_sqlpackage_server()} for restores (no Docker)")
         _wait_for_sql(log, timeout=20)
@@ -83,7 +83,8 @@ def _wait_for_sql(log, timeout=90):
     last_err = None
     while time.time() < deadline:
         try:
-            conn = pymssql.connect(**config.scratch_connect_kwargs(), timeout=5, login_timeout=5)
+            from . import restore
+            conn = restore.scratch_connect(timeout=5, login_timeout=5)
             conn.close()
             log("SQL Server is up.")
             return

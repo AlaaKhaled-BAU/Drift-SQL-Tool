@@ -3,6 +3,7 @@
 See docs/ARCHITECTURE.md."""
 import io
 import json
+import os
 import queue
 import threading
 import time
@@ -15,8 +16,8 @@ import pymssql
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from drift import (ai, ai_merge, blocks, classify, compare, config, datacopy, diff_render, diffing,
-                   executor, gatewrap, ledger, livescan, metrics, pipeline, profiles, proc_lens,
-                   scriptgen, statements, webdeploy)
+                   docker_mgmt, executor, gatewrap, ledger, livescan, metrics, pipeline, profiles,
+                   proc_lens, scriptgen, statements, webdeploy)
 from drift.apply_session import ApplySession, Decision
 from drift.trimmer import handle_trim
 
@@ -31,6 +32,8 @@ JOBS: dict[str, dict] = {}
 RUNS: dict[str, dict] = {}
 # Interactive live apply (client target only): session_id -> runtime bundle.
 APPLY_SESSIONS: dict[str, dict] = {}
+_SCRATCH_BUSY = 0
+_SCRATCH_BUSY_LOCK = threading.Lock()
 
 AI_BATCH_CAP = 25
 
@@ -234,6 +237,93 @@ def api_desktop_open_bak():
     if not path:
         return jsonify({"ok": False, "error": "cancelled or unavailable"}), 400
     return jsonify({"ok": True, "path": path})
+
+
+def _scratch_in_use() -> bool:
+    if _SCRATCH_BUSY:
+        return True
+    return any(j.get("kind") == "compare" and not j.get("done") for j in JOBS.values())
+
+
+def _public_settings(s: dict) -> dict:
+    return {
+        "mode": s["mode"], "server": s["server"], "port": s["port"], "auth": s["auth"],
+        "user": s["user"], "has_password": bool(s["password"]),
+        "source": s["source"], "env_locked": s["source"] == "env",
+        "windows_auth_available": os.name == "nt",
+    }
+
+
+def _scratch_test_connect(candidate):
+    kw = config.scratch_connect_kwargs(candidate)
+    if candidate["auth"] == "windows":
+        from drift import scratch_odbc
+        return scratch_odbc.connect(**kw, login_timeout=5, timeout=15)
+    return pymssql.connect(**kw, login_timeout=5, timeout=15)
+
+
+@app.get("/api/scratch/settings")
+def api_scratch_settings_get():
+    return jsonify(_public_settings(config.scratch_settings()))
+
+
+@app.post("/api/scratch/settings")
+def api_scratch_settings_save():
+    if config.scratch_env_locked():
+        return jsonify({"error": "settings come from DRIFT_SCRATCH_* environment variables or .env; edit those instead"}), 409
+    if _scratch_in_use():
+        return jsonify({"error": "a compare or rehearse is running; save again when it finishes"}), 409
+    try:
+        config.save_scratch_settings(request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "settings": _public_settings(config.scratch_settings())})
+
+
+@app.post("/api/scratch/test")
+def api_scratch_test():
+    body = request.get_json(silent=True) or {}
+    if body.get("mode") == "docker":
+        try:
+            docker_mgmt.ensure_running(lambda m: None)
+        except Exception as e:  # noqa: BLE001
+            return jsonify({"ok": False, "error": str(e)}), 200
+        return jsonify({"ok": True, "message": "Docker scratch container is running"})
+    saved = config.scratch_settings()
+    candidate = {
+        "mode": "local",
+        "server": config._normalize_server(str(body.get("server") or "")),
+        "port": int(body.get("port") or 1433),
+        "auth": body.get("auth") or "sql",
+        "user": str(body.get("user") or "").strip(),
+        "password": str(body.get("password") or "") or saved.get("password", ""),
+    }
+    if not candidate["server"]:
+        return jsonify({"ok": False, "error": "server is required"}), 200
+    if candidate["auth"] == "windows" and os.name != "nt":
+        return jsonify({"ok": False, "error": "Windows authentication only works when the tool runs on Windows"}), 200
+    try:
+        conn = _scratch_test_connect(candidate)
+        cur = conn.cursor(as_dict=True)
+        cur.execute(
+            "SELECT SUSER_SNAME() AS login_name, "
+            "CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS version, "
+            "CAST(SERVERPROPERTY('Edition') AS nvarchar(128)) AS edition, "
+            "IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin, "
+            "IS_SRVROLEMEMBER('dbcreator') AS is_dbcreator, "
+            "CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS data_dir"
+        )
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:  # noqa: BLE001 - shown to the user as the test result
+        return jsonify({"ok": False, "error": str(e)[:500]}), 200
+    can_restore = bool(row["is_sysadmin"]) or bool(row["is_dbcreator"])
+    return jsonify({
+        "ok": True, "login_name": row["login_name"], "version": row["version"],
+        "edition": row["edition"], "data_dir": row["data_dir"], "can_restore": can_restore,
+        "warning": None if can_restore else
+            "this login is not sysadmin or dbcreator; RESTORE and DROP DATABASE will fail",
+    })
 
 
 @app.post("/api/proc_lens")
@@ -1023,7 +1113,14 @@ def api_rehearse_endpoint(run_id, direction):
         return jsonify({
             "error": "rehearse is not available for a live client — restore a client .bak to scratch, or apply on a staging copy",
         }), 400
-    report = executor.rehearse(bak, batches, lambda m: print(f"[rehearse] {m}"))
+    global _SCRATCH_BUSY
+    with _SCRATCH_BUSY_LOCK:
+        _SCRATCH_BUSY += 1
+    try:
+        report = executor.rehearse(bak, batches, lambda m: print(f"[rehearse] {m}"))
+    finally:
+        with _SCRATCH_BUSY_LOCK:
+            _SCRATCH_BUSY -= 1
     out = run["run_dir"] / direction / "apply" / "execution_report.json"
     out.write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
 

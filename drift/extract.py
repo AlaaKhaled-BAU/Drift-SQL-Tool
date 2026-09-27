@@ -55,17 +55,21 @@ def extract_dacpac_source(source: dict, out_path, log) -> str:
 
 
 def extract_dacpac(db_name: str, out_path, log) -> str:
-    """Extract from the scratch SQL Server (Docker container or local instance)."""
+    """Extract from the scratch SQL Server (Docker container or configured server)."""
     log(f"extracting schema of [{db_name}] to {Path(out_path).name}...")
+    settings = config.scratch_settings()
+    kw = config.scratch_connect_kwargs(settings)
     cmd = [
         config.SQLPACKAGE_BIN,
         "/Action:Extract",
-        f"/SourceServerName:{config.scratch_sqlpackage_server()}",
+        f"/SourceServerName:{config.scratch_sqlpackage_server(settings)}",
         f"/SourceDatabaseName:{db_name}",
-        f"/SourceUser:{config.SCRATCH_USER}",
-        "/SourceTrustServerCertificate:True",  # scratch servers typically use a self-signed cert
+        "/SourceTrustServerCertificate:True",
         f"/TargetFile:{out_path}",
         "/p:ExtractAllTableData=false",
         "/p:VerifyExtraction=false",
     ]
-    return _extract_with_password(cmd, config.scratch_password(), db_name, log, out_path)
+    if "user" not in kw:  # Windows authentication
+        return _run_extract(cmd + ["/SourceTrustedConnection:True"], db_name, log, out_path)
+    cmd.insert(4, f"/SourceUser:{kw['user']}")
+    return _extract_with_password(cmd, kw["password"], db_name, log, out_path)

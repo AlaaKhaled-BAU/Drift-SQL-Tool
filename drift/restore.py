@@ -11,11 +11,17 @@ import pymssql
 from . import config
 
 
+def scratch_connect(**extra):
+    """All scratch-server connections go through here (Docker, SQL login, or Windows auth)."""
+    kw = config.scratch_connect_kwargs()
+    if "user" not in kw and config.scratch_settings()["mode"] == "local":
+        from . import scratch_odbc
+        return scratch_odbc.connect(**kw, **extra)
+    return pymssql.connect(**kw, **extra)
+
+
 def _connect(database=None, autocommit=True):
-    return pymssql.connect(
-        **config.scratch_connect_kwargs(),
-        database=database, autocommit=autocommit, timeout=0, login_timeout=10,
-    )
+    return scratch_connect(database=database, autocommit=autocommit, timeout=0, login_timeout=10)
 
 
 def open_connection(side: dict | None, scratch_db: str, autocommit=True, timeout=60):
@@ -32,8 +38,7 @@ def open_connection(side: dict | None, scratch_db: str, autocommit=True, timeout
             timeout=timeout,
             login_timeout=10,
         )
-    return pymssql.connect(
-        **config.scratch_connect_kwargs(),
+    return scratch_connect(
         database=scratch_db,
         autocommit=autocommit,
         timeout=timeout,
@@ -101,7 +106,7 @@ def _server_file_dirs(cur) -> tuple[str, str]:
 
 def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
     """Restore bak_host_path as db_name. Returns backup header info (version, date)."""
-    if config.USE_DOCKER:
+    if config.use_docker():
         container_path = stage_bak_in_container(bak_host_path, log)
     else:
         # Local SQL Server: its service account reads the file where it already is.

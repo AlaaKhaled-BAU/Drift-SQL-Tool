@@ -30,6 +30,8 @@
       <button type="button" role="tab" id="toolTabDrift" class="tool-tab tab-tip" data-tool="drift" aria-selected="false"
         title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
        >Drift tool</button>
+      <button type="button" role="tab" id="toolTabSettings" class="tool-tab tab-tip" data-tool="settings" aria-selected="false"
+        title="Where .bak files are restored: Docker container or your SQL Server (server, port, authentication).">Settings</button>
     </nav>
     </header>
 
@@ -271,6 +273,37 @@
           <pre id="pkgOut" class="trim-out"></pre>
         </section>
       </div>
+    </div>
+
+    <div id="paneSettings" class="tool-pane" data-tool="settings" hidden>
+      <h1>Settings</h1>
+      <div class="sub">Where <code>.bak</code> files are restored for compare and rehearse. Temporary databases are always named <code>drift_*</code> / <code>zz_rehearsal_*</code> and are dropped afterwards.</div>
+      <section class="block glass-panel" id="scratchSettings">
+        <p id="scratchEnvLocked" class="run-warning" hidden>These values come from <code>DRIFT_SCRATCH_*</code> environment variables or <code>.env</code>. Edit those to change them.</p>
+        <div class="side-mode-toggle" role="radiogroup" aria-label="Scratch server mode">
+          <label><input type="radio" name="scratchMode" value="docker" checked> Docker container</label>
+          <label><input type="radio" name="scratchMode" value="local"> SQL Server</label>
+        </div>
+        <div id="scratchLocalFields" hidden>
+          <label class="trim-label">Server <input id="scratchServer" class="live-in" autocomplete="off" placeholder="localhost, 192.168.1.10, or localhost\SQLEXPRESS"></label>
+          <label class="trim-label">Port <input id="scratchPort" class="live-in" inputmode="numeric" value="1433"></label>
+          <label class="trim-label">Authentication
+            <select id="scratchAuth" class="live-in">
+              <option value="sql">SQL Server login</option>
+              <option value="windows">Windows authentication</option>
+            </select>
+          </label>
+          <label class="trim-label">Username <input id="scratchUser" class="live-in" autocomplete="username"></label>
+          <label class="trim-label">Password <input id="scratchPass" type="password" class="live-in" autocomplete="off"></label>
+          <p id="scratchRemoteHint" class="hint" hidden>This is not this machine. The SQL Server reads the <code>.bak</code> from ITS disk, so the backup path you pick must also exist on that server (for example a shared <code>\\server\share</code> path).</p>
+          <p id="scratchWinAuthHint" class="hint" hidden>Signs in as the Windows user running Drift Tool.</p>
+        </div>
+        <div class="drift-copy-row">
+          <button type="button" class="ghost sm" id="scratchTestBtn">Test connection</button>
+          <button type="button" id="scratchSaveBtn">Save</button>
+          <span id="scratchStatus" class="hint" role="status" aria-live="polite"></span>
+        </div>
+      </section>
     </div>
 
     <div id="paneDrift" class="tool-pane" data-tool="drift" hidden>

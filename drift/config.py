@@ -1,4 +1,5 @@
 """Paths, container, and tool locations. Single source of truth."""
+import json
 import os
 import secrets
 import shutil
@@ -69,36 +70,122 @@ SA_PASSWORD_FILE = WORK_DIR / ".mssql_pw"
 
 SA_PASSWORD = _sa_password()
 
-# --- where .bak files get restored ---
-# Unset: the Docker container above. Set (e.g. "localhost" or "localhost\SQLEXPRESS"):
-# an existing SQL Server on THIS machine; its service reads the .bak straight from disk.
-SCRATCH_SERVER = os.environ.get("DRIFT_SCRATCH_SERVER", "").strip()
-USE_DOCKER = not SCRATCH_SERVER
-SCRATCH_PORT = int(os.environ.get("DRIFT_SCRATCH_PORT", "").strip() or 1433)
-SCRATCH_USER = os.environ.get("DRIFT_SCRATCH_USER", "").strip() or SA_USER
+SCRATCH_SETTINGS_FILE = WORK_DIR / "scratch_server.json"
+_ENV_KEYS = ("DRIFT_SCRATCH_SERVER", "DRIFT_SCRATCH_PORT", "DRIFT_SCRATCH_USER",
+             "DRIFT_SCRATCH_PASSWORD", "DRIFT_SCRATCH_AUTH")
 
 
-def scratch_password() -> str:
-    """Read at call time: docker_mgmt may adopt a different container password."""
-    if USE_DOCKER:
-        return SA_PASSWORD
-    return os.environ.get("DRIFT_SCRATCH_PASSWORD", "")
+def scratch_env_locked() -> bool:
+    """True when any DRIFT_SCRATCH_* variable is set: env wins over the Settings page."""
+    return any(os.environ.get(k, "").strip() for k in _ENV_KEYS)
 
 
-def scratch_connect_kwargs() -> dict:
-    """pymssql server/port/user/password for the scratch SQL Server."""
-    if USE_DOCKER:
-        server = {"server": "127.0.0.1", "port": HOST_PORT}
-    elif "\\" in SCRATCH_SERVER:
-        server = {"server": SCRATCH_SERVER}  # named instance; SQL Browser resolves the port
-    else:
-        server = {"server": SCRATCH_SERVER, "port": SCRATCH_PORT}
-    return {**server, "user": SCRATCH_USER, "password": scratch_password()}
+def _normalize_server(server: str) -> str:
+    """'.' and '(local)' are SSMS spellings that pymssql/FreeTDS do not understand."""
+    s = server.strip()
+    head, sep, instance = s.partition("\\")
+    if head.lower() in {".", "(local)"}:
+        head = "localhost"
+    return head + sep + instance
 
 
-def scratch_sqlpackage_server() -> str:
-    kw = scratch_connect_kwargs()
+def scratch_settings() -> dict:
+    """Current scratch-server settings, read fresh on every call (cheap: one small file)."""
+    if scratch_env_locked():
+        server = os.environ.get("DRIFT_SCRATCH_SERVER", "").strip()
+        return {
+            "mode": "local" if server else "docker",
+            "server": _normalize_server(server),
+            "port": int(os.environ.get("DRIFT_SCRATCH_PORT", "").strip() or 1433),
+            "auth": (os.environ.get("DRIFT_SCRATCH_AUTH", "").strip().lower() or "sql"),
+            "user": os.environ.get("DRIFT_SCRATCH_USER", "").strip(),
+            "password": os.environ.get("DRIFT_SCRATCH_PASSWORD", ""),
+            "source": "env",
+        }
+    try:
+        data = json.loads(SCRATCH_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as e:
+        print(f"[settings] ignoring unreadable {SCRATCH_SETTINGS_FILE.name}: {e}")
+        data = {}
+    mode = data.get("mode") if data.get("mode") in ("docker", "local") else "docker"
+    return {
+        "mode": mode,
+        "server": _normalize_server(str(data.get("server") or "")),
+        "port": int(data.get("port") or 1433),
+        "auth": data.get("auth") if data.get("auth") in ("sql", "windows") else "sql",
+        "user": str(data.get("user") or ""),
+        "password": str(data.get("password") or ""),
+        "source": "file" if data else "default",
+    }
+
+
+def use_docker() -> bool:
+    return scratch_settings()["mode"] == "docker"
+
+
+def scratch_connect_kwargs(settings: dict | None = None) -> dict:
+    """pymssql server/port/user/password for the scratch server.
+    Windows auth = no user and no password (only valid if the Phase 1 spike passed)."""
+    s = settings or scratch_settings()
+    if s["mode"] == "docker":
+        return {"server": "127.0.0.1", "port": HOST_PORT, "user": SA_USER, "password": SA_PASSWORD}
+    server = {"server": s["server"]} if "\\" in s["server"] else {"server": s["server"], "port": s["port"]}
+    if s["auth"] == "windows":
+        return server
+    return {**server, "user": s["user"], "password": s["password"]}
+
+
+def scratch_sqlpackage_server(settings: dict | None = None) -> str:
+    kw = scratch_connect_kwargs(settings)
     return f"{kw['server']},{kw['port']}" if "port" in kw else kw["server"]
+
+
+def save_scratch_settings(new: dict) -> dict:
+    """Validate and write work/scratch_server.json. Returns the saved dict (with password).
+    Raises ValueError with a user-facing message on bad input."""
+    mode = new.get("mode")
+    if mode not in ("docker", "local"):
+        raise ValueError("mode must be 'docker' or 'local'")
+    if mode == "docker":
+        out = {"mode": "docker"}
+    else:
+        server = _normalize_server(str(new.get("server") or ""))
+        if not server:
+            raise ValueError("server is required")
+        raw_port = new.get("port")
+        if raw_port is None or raw_port == "":
+            port = 1433
+        else:
+            try:
+                port = int(raw_port)
+            except (TypeError, ValueError):
+                raise ValueError("port must be a number") from None
+        if not 1 <= port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        auth = new.get("auth")
+        if auth not in ("sql", "windows"):
+            raise ValueError("auth must be 'sql' or 'windows'")
+        if auth == "windows" and os.name != "nt":
+            raise ValueError("Windows authentication is only available when the tool runs on Windows")
+        user = str(new.get("user") or "").strip()
+        password = str(new.get("password") or "")
+        if auth == "sql":
+            if not user:
+                raise ValueError("username is required for SQL Server login")
+            if not password:
+                password = scratch_settings().get("password", "")  # blank = keep saved one
+            if not password:
+                raise ValueError("password is required for SQL Server login")
+        else:
+            user, password = "", ""
+        out = {"mode": "local", "server": server, "port": port, "auth": auth,
+               "user": user, "password": password}
+    tmp = SCRATCH_SETTINGS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    os.replace(tmp, SCRATCH_SETTINGS_FILE)  # atomic on Windows and Linux
+    return out
 
 # .bak files are staged into the container with `docker cp`; no bind mount.
 BACKUP_BROWSE_ROOT = WORK_DIR
