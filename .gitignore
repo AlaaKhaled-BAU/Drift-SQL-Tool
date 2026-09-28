@@ -11,3 +11,4 @@ dist/
 # Legacy SQL Compare binaries (reference markdown lives under docs/legacy/sql-compare/)
 SQL Compare/
 SQL Compare.zip
+.build-cache/

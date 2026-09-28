@@ -9,6 +9,12 @@ if not exist .build-venv\Scripts\python.exe (
 .build-venv\Scripts\python -m pip install -q --upgrade pip || goto :fail
 .build-venv\Scripts\python -m pip install -q -r requirements.txt pyinstaller || goto :fail
 .build-venv\Scripts\python -m PyInstaller --noconfirm --clean drift-tool.spec || goto :fail
+rem sqlpackage (self-contained, .NET included) ships inside the app folder.
+if not exist .build-cache\sqlpackage.zip (
+    if not exist .build-cache mkdir .build-cache
+    powershell -NoProfile -Command "Invoke-WebRequest https://aka.ms/sqlpackage-windows -OutFile .build-cache\sqlpackage.zip" || goto :fail
+)
+powershell -NoProfile -Command "Expand-Archive -Force .build-cache\sqlpackage.zip dist\DriftTool\sqlpackage" || goto :fail
 .build-venv\Scripts\python tools\check_windows_exe.py dist\DriftTool || goto :fail
 
 if exist .env copy /y .env dist\DriftTool\.env >nul

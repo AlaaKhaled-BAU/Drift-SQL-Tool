@@ -9,7 +9,7 @@ from . import config
 
 def _run_extract(cmd, database_label: str, log, out_path) -> str:
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=600, env=config.sqlpackage_env())
+                       timeout=600, env=config.sqlpackage_env(), **config.NO_WINDOW)
     if r.returncode != 0:
         raise RuntimeError(
             f"sqlpackage Extract failed for [{database_label}]:\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}"

@@ -66,6 +66,7 @@ def stage_bak_in_container(host_path: Path, log) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **config.NO_WINDOW,
     )
     if r.returncode != 0:
         raise RuntimeError(f"docker cp failed for {host_path.name}:\n{r.stderr[-1500:]}")

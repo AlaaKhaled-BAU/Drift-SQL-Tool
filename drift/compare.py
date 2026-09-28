@@ -130,7 +130,7 @@ def run_deploy_report(source_dacpac, target_dacpac, out_path, log) -> str:
         f"/OutputPath:{out_path}",
     ] + config.COMPARE_PROFILE
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=600, env=config.sqlpackage_env())
+                       timeout=600, env=config.sqlpackage_env(), **config.NO_WINDOW)
     if r.returncode != 0:
         combined = r.stdout + "\n" + r.stderr
         if "SQL74502" in combined:

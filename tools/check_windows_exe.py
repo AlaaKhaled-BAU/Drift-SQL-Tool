@@ -1,8 +1,10 @@
 """Fail the Windows build unless DriftTool.exe is a windowed desktop app.
 
-Checks the PE subsystem (2 = GUI, 3 = console) and that pywebview was bundled.
+Checks the PE subsystem (2 = GUI, 3 = console), that pywebview was bundled,
+and that the bundled sqlpackage runs without a separate .NET install.
 """
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -29,7 +31,15 @@ def main(dist: Path) -> int:
     if not any(dist.rglob("webview*")):
         print("FAIL: pywebview is not in the bundle; the exe would have no window.")
         return 1
-    print(f"OK: {exe} is a windowed desktop app.")
+    sqlpackage = dist / "sqlpackage" / "sqlpackage.exe"
+    if not sqlpackage.is_file():
+        print(f"FAIL: {sqlpackage} missing; .bak compares would need a separate install.")
+        return 1
+    r = subprocess.run([str(sqlpackage), "/Version"], capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        print(f"FAIL: bundled sqlpackage does not run:\n{r.stdout}\n{r.stderr}")
+        return 1
+    print(f"OK: {exe} is a windowed desktop app; bundled sqlpackage {r.stdout.strip()}.")
     return 0
 
 

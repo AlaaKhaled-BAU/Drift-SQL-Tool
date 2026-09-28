@@ -211,6 +211,9 @@ def _sqlpackage_bin() -> str:
     if override:
         return override
     name = "sqlpackage.exe" if os.name == "nt" else "sqlpackage"
+    bundled = ROOT / "sqlpackage" / name
+    if bundled.is_file():
+        return str(bundled)
     tool = Path.home() / ".dotnet" / "tools" / name
     if tool.is_file():
         return str(tool)
@@ -249,6 +252,10 @@ COMPARE_PROFILE = [
     "/p:AllowIncompatiblePlatform=true",
     "/p:ExcludeObjectTypes=Users",
 ]
+
+
+# The Windows exe has no console, so child processes would each open one.
+NO_WINDOW = {"creationflags": 0x08000000, "stdin": -3} if os.name == "nt" else {}
 
 
 def sqlpackage_env():
