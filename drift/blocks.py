@@ -388,7 +388,12 @@ def resolve_scope(definition: str, client_active_id) -> dict:
 
     relevant: list[str] = []
     excluded: list[dict] = []
-    stats = {"match": 0, "no_match": 0, "unknown": 0}
+    stats = {"match": 0, "no_match": 0, "unknown": 0, "unknown_client": 0}
+
+    def note_unknown(condition: str | None) -> None:
+        stats["unknown"] += 1
+        if condition and re.search(r"@ClientActive\b", condition, re.IGNORECASE):
+            stats["unknown_client"] += 1
 
     def walk(body_text: str) -> bool:
         """True = region fully walked; False = no boundaries here (caller of
@@ -408,7 +413,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
             branches = _parse_chain(seg["text"])
             if not branches:
                 relevant.append(seg["text"])     # unsplittable chain: keep whole
-                stats["unknown"] += 1
+                note_unknown(seg["text"])
                 continue
             matched = False       # some earlier branch DEFINITELY runs for us
             prior_uncertain = False
@@ -446,12 +451,14 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     # Unbraced/unbounded: extent not proven -- keep + flag
                     # (conservative; a wrongly-kept block costs a glance,
                     # a wrongly-excluded one is a missed change).
-                    stats["unknown"] += 1
+                    note_unknown(b.get("condition"))
                     prior_uncertain = True
                     if b["body"]:
                         if not walk(b["body"]):
                             if not _KEYWORD_RE.search(_mask(b["body"])):
                                 stats["unknown"] -= 1
+                                if b.get("condition") and re.search(r"@ClientActive\b", b["condition"], re.IGNORECASE):
+                                    stats["unknown_client"] -= 1
                                 stats["no_match"] += 1
                                 excluded.append({
                                     "line": seg["line"],
@@ -466,7 +473,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     stats["match"] += 1
                     matched = True
                 else:
-                    stats["unknown"] += 1
+                    note_unknown(b.get("condition"))
                     prior_uncertain = True
                 if b.get("bounded"):
                     emit_kept(b["kind"], b["condition"], b["body"] or "")

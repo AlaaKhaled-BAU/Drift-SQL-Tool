@@ -12,7 +12,13 @@ a = Analysis(
         ("exclude-from-drift.txt", "."),
         ("TUTORIAL.md", "."),
     ],
-    hiddenimports=["pymssql._mssql", "pymssql._pymssql"],
+    hiddenimports=[
+        "pymssql._mssql",
+        "pymssql._pymssql",
+        "pyodbc",
+        "tkinter",
+        "tkinter.filedialog",
+    ],
     excludes=["gi", "pytest"],
 )
 pyz = PYZ(a.pure)

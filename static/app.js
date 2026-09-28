@@ -1981,30 +1981,60 @@ function pastePreview(text) {
 function rememberPaste(el, text) {
   HUGE_PASTE.set(el, text);
   const n = text.split("\n").length;
-  setPasteHint(el, `${n.toLocaleString()} lines in memory (${Math.round(text.length / 1024)} KB) — Trim / Pair uses the full paste.`);
+  setPasteHint(el, `${n.toLocaleString()} lines in memory (${Math.round(text.length / 1024)} KB) — Trim / Pair uses the full paste, not only the lines shown.`);
+}
+
+// The box shows a prefix. An edit is the difference between that prefix and
+// the box; apply it to the full buffer at the same offsets so the hidden tail stays.
+function splicePreviewEdit(full, previous, shown) {
+  let pre = 0;
+  const maxPre = Math.min(previous.length, shown.length);
+  while (pre < maxPre && previous[pre] === shown[pre]) pre++;
+  let suf = 0;
+  const maxSuf = Math.min(previous.length - pre, shown.length - pre);
+  while (suf < maxSuf && previous[previous.length - 1 - suf] === shown[shown.length - 1 - suf]) suf++;
+  return full.slice(0, pre) + shown.slice(pre, shown.length - suf) + full.slice(previous.length - suf);
 }
 
 function bindFastPaste(el) {
   if (!el) return;
+  let syncing = false;
   el.addEventListener("paste", (e) => {
     const clip = e.clipboardData?.getData("text/plain") || "";
-    if (clip.length < 8000) {
-      HUGE_PASTE.delete(el);
-      setPasteHint(el, "");
-      return;
-    }
+    const existing = HUGE_PASTE.get(el);
+    if (!existing && clip.length < 8000) return;
     e.preventDefault();
     e.stopPropagation();
-    rememberPaste(el, clip);
-    el.value = pastePreview(clip);
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? start;
+    const preview = existing ? pastePreview(existing) : "";
+    const replacingAll = !existing || (start === 0 && end === preview.length);
+    const next = (!existing || (replacingAll && clip.length >= 8000))
+      ? clip
+      : existing.slice(0, start) + clip + existing.slice(end);
+    rememberPaste(el, next);
+    syncing = true;
+    el.value = pastePreview(next);
+    const caret = Math.min(start + (replacingAll && clip.length >= 8000 ? 0 : clip.length), el.value.length);
+    el.setSelectionRange(caret, caret);
+    syncing = false;
   });
   el.addEventListener("input", () => {
+    if (syncing) return;
     const full = HUGE_PASTE.get(el);
     if (!full) return;
-    const fullLines = full.split("\n");
-    const headN = Math.min(PASTE_PREVIEW_LINES, fullLines.length);
-    const newHead = el.value.split("\n");
-    rememberPaste(el, newHead.concat(fullLines.slice(headN)).join("\n"));
+    const previous = pastePreview(full);
+    if (el.value === previous) return;
+    const caret = el.selectionStart ?? el.value.length;
+    const next = splicePreviewEdit(full, previous, el.value);
+    rememberPaste(el, next);
+    const preview = pastePreview(next);
+    if (el.value === preview) return;
+    syncing = true;
+    el.value = preview;
+    const pos = Math.min(caret, el.value.length);
+    el.setSelectionRange(pos, pos);
+    syncing = false;
   });
 }
 
@@ -2042,7 +2072,25 @@ document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
       if (trimOut) trimOut.textContent = data.reason || "failed";
       if (trimHarvest) trimHarvest.textContent = HARVEST_EMPTY_COPY;
     }
-    document.getElementById("trimUnknown").hidden = !data.unknown_kept;
+    const unknownEl = document.getElementById("trimUnknown");
+    if (unknownEl) {
+      const removed = (data.harvest || []).length;
+      const mixed = data.stats?.unknown_client || 0;
+      if (data.ok && removed) {
+        unknownEl.hidden = false;
+        unknownEl.className = mixed ? "run-warning" : "hint";
+        unknownEl.textContent = mixed
+          ? `Removed ${removed} branches this client never runs. ${mixed} ClientActive gate(s) also depend on other values (company, flags), so those branches were kept.`
+          : `Removed ${removed} branches this client never runs. Checks that are not ClientActive (row counts, flags) stay, because they run at execution time.`;
+      } else if (data.ok && mixed) {
+        unknownEl.hidden = false;
+        unknownEl.className = "run-warning";
+        unknownEl.textContent = `${mixed} ClientActive gate(s) also depend on other values, so those branches were kept.`;
+      } else {
+        unknownEl.hidden = true;
+        unknownEl.textContent = "";
+      }
+    }
     syncCopyBtnForPre(document.getElementById("trimOutCopyBtn"), trimOut);
     syncCopyBtnForPre(document.getElementById("trimHarvestCopyBtn"), trimHarvest, HARVEST_EMPTY_COPY);
   } finally {

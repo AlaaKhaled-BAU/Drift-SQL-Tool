@@ -7,11 +7,17 @@ except ImportError:
     import blocks, diffing
 
 _AS_SUFFIX = re.compile(r"\bAS\s*$", re.IGNORECASE)
+_PROC_START = re.compile(r"(?is)\b(?:ALTER|CREATE)\s+(?:PROC|PROCEDURE|FUNCTION|VIEW|TRIGGER)\b")
 
 
 def trim_procedure(definition: str, client_active_id) -> dict:
     if not (definition or "").strip():
         return {"ok": False, "reason": "empty definition", "trimmed_sql": None, "harvest": []}
+    # SSMS "Script as" dumps start with USE/GO/SET. Those are not the procedure,
+    # and leaving them in made a trimmed body look like the original script.
+    start = _PROC_START.search(definition)
+    if start:
+        definition = definition[start.start():]
     scope = blocks.resolve_scope(definition, client_active_id)
     if not scope.get("ok"):
         return {
@@ -33,7 +39,7 @@ def trim_procedure(definition: str, client_active_id) -> dict:
         "client_id": scope.get("client_id"),
         "trimmed_sql": trimmed,
         "harvest": scope.get("excluded_blocks") or [],
-        "unknown_kept": int(stats.get("unknown") or 0) > 0,
+        "unknown_kept": int(stats.get("unknown_client") or 0) > 0,
         "stats": stats,
     }
 
