@@ -9,6 +9,7 @@ if not exist .build-venv\Scripts\python.exe (
 .build-venv\Scripts\python -m pip install -q --upgrade pip || goto :fail
 .build-venv\Scripts\python -m pip install -q -r requirements.txt pyinstaller || goto :fail
 .build-venv\Scripts\python -m PyInstaller --noconfirm --clean drift-tool.spec || goto :fail
+.build-venv\Scripts\python tools\check_windows_exe.py dist\DriftTool || goto :fail
 
 if exist .env copy /y .env dist\DriftTool\.env >nul
 echo.

@@ -1,10 +1,16 @@
-# PyInstaller spec for the Drift Tool exe (Windows and Linux alike).
+# PyInstaller spec for the Drift Tool exe.
 # Build: build-windows.bat  (or ./build.sh on Linux)
-# Output: dist/DriftTool/DriftTool(.exe). Runs from app.py: Flask + browser + native .bak dialog.
+# Output: dist/DriftTool/DriftTool(.exe).
+# Windows: windows_app.py, a native WebView2 window with no console (checked by tools/check_windows_exe.py).
+# Linux: app.py, Flask + browser (the Linux desktop window is run-desktop.sh).
 # work/ and an optional .env live beside the executable, not inside the bundle.
+import sys
+
+IS_WINDOWS = sys.platform == "win32"
+ENTRY = "windows_app.py" if IS_WINDOWS else "app.py"
 
 a = Analysis(
-    ["app.py"],
+    [ENTRY],
     pathex=["."],
     datas=[
         ("templates", "templates"),
@@ -13,12 +19,13 @@ a = Analysis(
         ("TUTORIAL.md", "."),
     ],
     hiddenimports=[
+        "app",
         "pymssql._mssql",
         "pymssql._pymssql",
         "pyodbc",
         "tkinter",
         "tkinter.filedialog",
-    ],
+    ] + (["webview", "webview.platforms.edgechromium", "webview.platforms.winforms", "clr"] if IS_WINDOWS else []),
     excludes=["gi", "pytest"],
 )
 pyz = PYZ(a.pure)
@@ -28,6 +35,6 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="DriftTool",
-    console=True,
+    console=not IS_WINDOWS,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="DriftTool")
