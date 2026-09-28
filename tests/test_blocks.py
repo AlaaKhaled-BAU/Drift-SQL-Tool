@@ -71,6 +71,36 @@ class ConditionEvaluation(unittest.TestCase):
         cond = "/* old gate: @ClientActive = 165 */ @ClientActive = 66"
         self.assertEqual(evaluate_condition(cond, 66), "match")
 
+    def test_neq_still_beats_lt(self):
+        # A bare < must not eat <>
+        self.assertEqual(evaluate_condition("@ClientActive <> 10", 5), "match")
+        self.assertEqual(evaluate_condition("@ClientActive <> 10", 10), "no_match")
+        self.assertEqual(evaluate_condition("@ClientActive < 10", 5), "match")
+        self.assertEqual(evaluate_condition("@ClientActive < 10", 15), "no_match")
+        self.assertEqual(evaluate_condition("@ClientActive <= 10", 10), "match")
+        self.assertEqual(evaluate_condition("@ClientActive <= 10", 11), "no_match")
+        self.assertEqual(evaluate_condition("@ClientActive > 10", 15), "match")
+        self.assertEqual(evaluate_condition("@ClientActive > 10", 5), "no_match")
+        self.assertEqual(evaluate_condition("@ClientActive >= 10", 10), "match")
+        self.assertEqual(evaluate_condition("@ClientActive >= 10", 9), "no_match")
+
+    def test_between_not_split_on_its_and(self):
+        self.assertEqual(evaluate_condition("@ClientActive BETWEEN 10 AND 20", 15), "match")
+        self.assertEqual(evaluate_condition("@ClientActive BETWEEN 10 AND 20", 5), "no_match")
+        self.assertEqual(evaluate_condition("@ClientActive NOT BETWEEN 10 AND 20", 5), "match")
+        self.assertEqual(evaluate_condition("@ClientActive NOT BETWEEN 10 AND 20", 15), "no_match")
+        # Ensure BETWEEN is not broken when followed by another AND term
+        self.assertEqual(evaluate_condition("@ClientActive BETWEEN 10 AND 20 AND @CompNo = 1", 5), "no_match")
+
+    def test_parenthesized_disjunction_under_conjunction(self):
+        # (@ClientActive = 1 OR @ClientActive = 999) for 999
+        self.assertEqual(evaluate_condition("(@ClientActive = 1 OR @ClientActive = 999)", 999), "match")
+        self.assertEqual(evaluate_condition("(@ClientActive = 1 OR @ClientActive = 2)", 999), "no_match")
+        # Under conjunction with unknown variable, match + unknown -> unknown (kept + flagged)
+        self.assertEqual(evaluate_condition("(@ClientActive = 1 OR @ClientActive = 999) AND @CompNo = 1", 999), "unknown")
+        # no_match + unknown -> no_match
+        self.assertEqual(evaluate_condition("(@ClientActive = 1 OR @ClientActive = 2) AND @CompNo = 1", 999), "no_match")
+
 
 class ScopeResolution(unittest.TestCase):
     def test_own_gate_kept_plus_generic_statement(self):
@@ -255,6 +285,31 @@ class FingerprintSemantics(unittest.TestCase):
         a = resolve_scope(_proc("IF @ClientActive=66\nBEGIN\n  select    1\nEND"), 66)
         b = resolve_scope(_proc("IF @ClientActive = 66\nBEGIN\nSELECT 1\nEND"), 66)
         self.assertEqual(a["fingerprint"], b["fingerprint"])
+
+    def test_nested_dead_if_start_line_is_on_inner_if_not_outer_begin(self):
+        proc = """CREATE PROCEDURE dbo.NestedStartLineTest AS
+BEGIN
+  IF @ClientActive = 1
+  BEGIN
+    SELECT 10
+
+    IF @ClientActive = 2
+    BEGIN
+      SELECT 20
+    END
+
+    SELECT 30
+  END
+END"""
+        r = resolve_scope(proc, 1)
+        self.assertTrue(r["ok"])
+        ranges = r.get("excluded_ranges")
+        self.assertEqual(len(ranges), 1)
+        # Line 7 is: IF @ClientActive = 2
+        # Line 10 is: END
+        self.assertEqual(ranges[0], [7, 10])
+        self.assertEqual(r["excluded_blocks"][0]["start_line"], 7)
+        self.assertEqual(r["excluded_blocks"][0]["end_line"], 10)
 
 
 class HeuristicTier(unittest.TestCase):

@@ -150,7 +150,7 @@ def _strip_outer_begin_end(body: str) -> tuple:
     return body[first.end():close_start], first.end()
 
 
-def _segment_statements(body: str) -> list:
+def _segment_statements(body: str, include_offset: bool = False) -> list:
     """[(text, line), ...] -- byte-exact source slices, found by this
     module's own depth-tracked keyword scan, not by asking sqlglot to
     split a multi-statement blob (measured unreliable -- see module
@@ -168,7 +168,8 @@ def _segment_statements(body: str) -> list:
     Either way, if the suppressed body turns out to be `BEGIN...END`, its
     own nesting is still depth-tracked normally (a stray top-level keyword
     inside it is already protected by the plain depth==0 check, no
-    suppression needed for that part)."""
+    suppression needed for that part).
+    When include_offset=True, returns [(text, line, start_offset), ...]."""
     original_body = body
     body, offset = _strip_outer_begin_end(body)
     masked = _mask_literals_and_comments(body)
@@ -238,7 +239,11 @@ def _segment_statements(body: str) -> list:
             # +offset: line numbers are reported against the ORIGINAL body
             # (what a human looking at the real definition sees), not the
             # BEGIN/END-stripped text this function actually sliced.
-            segments.append((text, _line_of(original_body, start + offset)))
+            line_no = _line_of(original_body, start + offset)
+            if include_offset:
+                segments.append((text, line_no, start + offset))
+            else:
+                segments.append((text, line_no))
     return segments
 
 

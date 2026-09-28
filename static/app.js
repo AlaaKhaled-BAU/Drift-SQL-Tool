@@ -89,9 +89,49 @@ function normalizeTrimLine(line) {
   return t.replace(/\s+/g, " ");
 }
 
-function classifyTrimSourceLines(source, trimmedSql, harvest) {
+function classifyTrimSourceLines(source, trimmedSql, harvest, excludedRanges) {
+  const normSource = (source || "").replace(/\r\n/g, "\n");
+  const rawLines = normSource.split("\n");
+
+  let ranges = Array.isArray(excludedRanges) ? excludedRanges : [];
+  if (!ranges.length && Array.isArray(harvest)) {
+    for (const h of harvest) {
+      if (h && typeof h.start_line === "number" && typeof h.end_line === "number") {
+        ranges.push([h.start_line, h.end_line]);
+      }
+    }
+  }
+
+  // If 1-based inclusive ranges are available, use range-based attribution
+  if (ranges.length > 0) {
+    const trimmedSet = new Set(
+      (trimmedSql || "").replace(/\r\n/g, "\n").split("\n").map(normalizeTrimLine).filter(Boolean)
+    );
+    return rawLines.map((raw, idx) => {
+      const lineNo = idx + 1;
+
+      // Range check first: any line inside any excluded range is trimmed (red strikethrough),
+      // including blank lines, taking priority over whether identical text appears in kept SQL.
+      for (const [start, end] of ranges) {
+        if (lineNo >= start && lineNo <= end) {
+          return { raw, kind: "trimmed" };
+        }
+      }
+
+      const norm = normalizeTrimLine(raw);
+      if (!norm) return { raw, kind: "plain" };
+
+      if (trimmedSet.has(norm)) {
+        return { raw, kind: "kept" };
+      }
+
+      return { raw, kind: "plain" };
+    });
+  }
+
+  // Fallback: unordered text sets only if ranges are absent
   const trimmedSet = new Set(
-    (trimmedSql || "").split("\n").map(normalizeTrimLine).filter(Boolean)
+    (trimmedSql || "").replace(/\r\n/g, "\n").split("\n").map(normalizeTrimLine).filter(Boolean)
   );
   const harvestSet = new Set();
   for (const h of harvest || []) {
@@ -100,7 +140,7 @@ function classifyTrimSourceLines(source, trimmedSql, harvest) {
       if (n) harvestSet.add(n);
     }
   }
-  return (source || "").split("\n").map(raw => {
+  return rawLines.map(raw => {
     const norm = normalizeTrimLine(raw);
     if (!norm) return { raw, kind: "plain" };
     if (trimmedSet.has(norm)) return { raw, kind: "kept" };
@@ -2062,7 +2102,7 @@ document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
     const data = await r.json();
     if (split) split.hidden = false;
     if (data.ok) {
-      const lines = classifyTrimSourceLines(source, data.trimmed_sql, data.harvest);
+      const lines = classifyTrimSourceLines(source, data.trimmed_sql, data.harvest, data.excluded_ranges);
       if (trimOriginal) trimOriginal.innerHTML = renderTrimOriginalAnnotated(lines);
       if (trimOut) trimOut.textContent = data.trimmed_sql;
       const harvestText = (data.harvest || []).map(h => `${h.kind || ""} ${h.condition || ""}\n${h.body || ""}`).join("\n---\n");

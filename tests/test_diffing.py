@@ -157,6 +157,28 @@ def test_case_change_inside_literal_is_real_change():
     assert r["change_kind"] == "body", r
 
 
+def test_nested_block_comments_depth():
+    """Nested T-SQL block comments /* /* */ */ must mask completely and not leave keywords inside."""
+    try:
+        from drift.diffing import mask_comments
+    except ImportError:
+        from diffing import mask_comments
+    text = "/* outer /* inner */ still comment with BEGIN and END */ SELECT 1"
+    masked = mask_comments(text)
+    assert "BEGIN" not in masked
+    assert "END" not in masked
+    assert "SELECT 1" in masked
+
+
+def test_block_comment_inside_string_does_not_start_comment():
+    """/* inside a string literal must not be treated as opening a comment."""
+    text = "SELECT '/* not a comment */' AS msg\nBEGIN\n SELECT 1\nEND"
+    spans = code_spans(text)
+    joined = "".join(text[a:b] for a, b in spans)
+    assert "/* not a comment */" not in joined
+    assert "BEGIN" in joined
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for name, obj in list(globals().items()):

@@ -186,6 +186,27 @@ def test_measured_ok_rate_against_100_real_procedures():
     assert rate >= 64.5, f"regressed below the plan's own measured baseline: {rate:.1f}%"
 
 
+def test_unpack_text_line_without_include_offset():
+    """Existing statement-segmentation callers that unpack (text, line) still work when include_offset is omitted."""
+    body = "SELECT 1;\nSELECT 2;"
+    segs = statements._segment_statements(body)
+    assert len(segs) == 2
+    for item in segs:
+        assert len(item) == 2
+        text, line = item
+        assert isinstance(text, str)
+        assert isinstance(line, int)
+
+
+def test_nested_comment_does_not_change_begin_end_depth():
+    """Nested /* /* */ BEGIN END */ does not change BEGIN/END depth."""
+    body = "/* outer /* inner */ BEGIN END */ SELECT 1;"
+    segs = statements._segment_statements(body)
+    assert len(segs) == 1
+    text, line = segs[0]
+    assert "SELECT 1" in text
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for t in tests:

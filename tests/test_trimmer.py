@@ -178,12 +178,92 @@ class HandleTrim(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertIn("trimmed_sql", data)
         self.assertIn("harvest", data)
+        self.assertIn("excluded_ranges", data)
 
     def test_handle_trim_bad_id_400(self):
         data, status = handle_trim({"definition": PROC, "client_active_id": "abc"})
         self.assertEqual(status, 400)
         self.assertFalse(data["ok"])
         self.assertIn("reason", data)
+
+
+class ExcludedRangesAndHighlighting(unittest.TestCase):
+    def test_excluded_ranges_emitted_and_paint_entire_branch_red(self):
+        proc = """CREATE PROCEDURE dbo.CollisionTest
+AS
+BEGIN
+  -- comment outside gate
+  IF @ClientActive = 1
+  BEGIN
+    SELECT 1
+  END
+  IF @ClientActive = 2
+  BEGIN
+
+    SELECT 1
+  END
+END"""
+        r = trim_procedure(proc, 1)
+        self.assertTrue(r["ok"])
+        ranges = r.get("excluded_ranges")
+        self.assertTrue(bool(ranges), "excluded_ranges must be non-empty")
+        # Line 9 to 13 is IF @ClientActive = 2 BEGIN \n SELECT 1 END
+        self.assertEqual(ranges[0], [9, 13])
+
+        # Test highlighting logic equivalent to app.js:
+        # Check range first: any line inside [start, end] is 'trimmed' (even blanks)
+        trimmed_sql = r["trimmed_sql"]
+        raw_lines = proc.splitlines()
+        trimmed_set = set(l.strip() for l in trimmed_sql.splitlines() if l.strip())
+
+        classified = []
+        for idx, raw in enumerate(raw_lines):
+            line_no = idx + 1
+            if any(s <= line_no <= e for s, e in ranges):
+                kind = "trimmed"
+            else:
+                norm = raw.strip()
+                if not norm:
+                    kind = "plain"
+                elif norm in trimmed_set:
+                    kind = "kept"
+                else:
+                    kind = "plain"
+            classified.append((line_no, kind, raw))
+
+        # Line 4 is comment outside gate -> plain
+        self.assertEqual(classified[3][1], "plain")
+        # Lines 5-8 are ClientActive = 1 -> kept
+        for i in range(4, 8):
+            self.assertEqual(classified[i][1], "kept", f"Line {i+1} should be kept")
+        # Lines 9-13 are ClientActive = 2 -> trimmed (ALL lines red, including blank line 11 and SELECT 1)
+        for i in range(8, 13):
+            self.assertEqual(classified[i][1], "trimmed", f"Line {i+1} should be trimmed despite collision")
+        self.assertEqual(classified[10][1], "trimmed", "Blank line inside cut block must be trimmed")
+
+    def test_three_line_preamble_before_create_proc(self):
+        script = """USE [master]
+GO
+SET ANSI_NULLS ON
+CREATE PROCEDURE dbo.PreambleTest AS
+BEGIN
+  IF @ClientActive = 1
+  BEGIN
+    SELECT 1
+  END
+  IF @ClientActive = 2
+  BEGIN
+    SELECT 2
+  END
+END"""
+        r = trim_procedure(script, 1)
+        self.assertTrue(r["ok"])
+        ranges = r.get("excluded_ranges")
+        self.assertEqual(len(ranges), 1)
+        # Line 10 to 13 is IF @ClientActive = 2 ... END in the full original script
+        self.assertEqual(ranges[0], [10, 13])
+        self.assertEqual(r["harvest"][0]["start_line"], 10)
+        self.assertEqual(r["harvest"][0]["end_line"], 13)
 
 
 if __name__ == "__main__":

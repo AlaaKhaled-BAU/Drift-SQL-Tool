@@ -18,7 +18,7 @@ _FIRST_AS = re.compile(r"(?i)\bAS\b")
 def code_spans(text: str) -> list[tuple[int, int]]:
     """(start, end) offsets of every span of `text` that is NOT inside a
     '...' string literal or a [...] bracketed identifier.
-    Line comments (-- to newline) and block comments (/* to */, non-nesting)
+    Line comments (-- to newline) and nested block comments (/* to */)
     are part of these spans; a quote inside a comment must not open a string.
     Doubled '' / ]] still escape inside real literals/identifiers.
     normalize_sql()/split_param_body() only scan within these spans -- never
@@ -36,9 +36,16 @@ def code_spans(text: str) -> list[tuple[int, int]]:
             continue
         if ch == "/" and nxt == "*":
             i += 2
-            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
-                i += 1
-            i = min(i + 2, n)
+            comment_depth = 1
+            while i < n and comment_depth > 0:
+                if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    comment_depth += 1
+                    i += 2
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    comment_depth -= 1
+                    i += 2
+                else:
+                    i += 1
             continue
         if ch in ("'", "["):
             if i > start:
@@ -64,10 +71,44 @@ def code_spans(text: str) -> list[tuple[int, int]]:
 def mask_comments(chunk: str) -> str:
     """Blank out comment text with equal-length spaces so AS-search match
     offsets stay valid against the original chunk -- used only to decide
-    WHERE the split point is, never to produce returned text."""
-    chunk = _COMMENT_BLOCK.sub(lambda m: " " * len(m.group()), chunk)
-    chunk = _COMMENT_LINE.sub(lambda m: " " * len(m.group()), chunk)
-    return chunk
+    WHERE the split point is, never to produce returned text.
+    Assumes string literals and bracketed identifiers are already excluded
+    or blanked by callers (code_spans, _mask_literals_and_comments).
+    Supports nested T-SQL block comments. Preserves newlines."""
+    if not chunk:
+        return ""
+    out = list(chunk)
+    n = len(chunk)
+    i = 0
+    while i < n:
+        ch = chunk[i]
+        nxt = chunk[i + 1] if i + 1 < n else ""
+        if ch == "-" and nxt == "-":
+            start = i
+            while i < n and chunk[i] != "\n":
+                i += 1
+            for k in range(start, i):
+                out[k] = " "
+            continue
+        if ch == "/" and nxt == "*":
+            start = i
+            comment_depth = 1
+            i += 2
+            while i < n and comment_depth > 0:
+                if chunk[i] == "/" and i + 1 < n and chunk[i + 1] == "*":
+                    comment_depth += 1
+                    i += 2
+                elif chunk[i] == "*" and i + 1 < n and chunk[i + 1] == "/":
+                    comment_depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            for k in range(start, min(i, n)):
+                if chunk[k] != "\n":
+                    out[k] = " "
+            continue
+        i += 1
+    return "".join(out)
 
 
 def normalize_sql(text: str) -> str:
@@ -78,9 +119,7 @@ def normalize_sql(text: str) -> str:
     for start, end in code_spans(text):
         if start > last:
             out.append(text[last:start])  # literal/bracketed span -- byte-exact, untouched
-        chunk = text[start:end]
-        chunk = _COMMENT_BLOCK.sub(" ", chunk)
-        chunk = _COMMENT_LINE.sub(" ", chunk)
+        chunk = mask_comments(text[start:end])
         chunk = _WS.sub(" ", chunk)
         out.append(chunk.casefold())
         last = end
@@ -89,17 +128,23 @@ def normalize_sql(text: str) -> str:
     return "".join(out).strip()
 
 
-def split_param_body(definition: str) -> tuple[str, str]:
+def split_param_body(definition: str, include_offset: bool = False):
     """Best-effort split of a CREATE PROC/FUNC/TRIGGER into (param_block, body).
     Searches only outside string literals/bracketed identifiers and with
     comments masked out, so neither a literal nor a comment containing the
-    word AS can be mistaken for the real split point."""
+    word AS can be mistaken for the real split point.
+    When include_offset=True, returns (param_block, body, split_idx)."""
     for pattern in (_STANDALONE_AS, _FIRST_AS):
         for start, end in code_spans(definition):
             masked = mask_comments(definition[start:end])
             m = pattern.search(masked)
             if m:
-                return definition[: start + m.start()], definition[start + m.end() :]
+                split_idx = start + m.end()
+                if include_offset:
+                    return definition[: start + m.start()], definition[split_idx:], split_idx
+                return definition[: start + m.start()], definition[split_idx:]
+    if include_offset:
+        return definition, "", len(definition)
     return definition, ""
 
 

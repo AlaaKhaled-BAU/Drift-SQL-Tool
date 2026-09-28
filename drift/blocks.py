@@ -62,10 +62,22 @@ _VAR_RE = re.compile(r"@ClientActive\b", re.IGNORECASE)
 # Recognized gate shapes around the variable. Operand order matters
 # (`165 = @ClientActive` appears in the wild). Anything mentioning the
 # variable in an unrecognized shape is UNKNOWN, never guessed.
-_EQ_FWD_RE = re.compile(r"@ClientActive\s*=\s*(\d+)\b", re.IGNORECASE)
-_EQ_REV_RE = re.compile(r"\b(\d+)\s*=\s*@ClientActive\b", re.IGNORECASE)
+# Operator order: test <>, <=, >= before <, >, = so bare < or = never eats compound ops.
+_BETWEEN_RE = re.compile(r"@ClientActive\s+(NOT\s+)?BETWEEN\s+(\d+)\s+AND\s+(\d+)\b", re.IGNORECASE)
+_BETWEEN_AND_MASK_RE = re.compile(r"(@ClientActive\s+(?:NOT\s+)?BETWEEN\s+\d+\s+)(AND)(\s+\d+)", re.IGNORECASE)
+
 _NE_FWD_RE = re.compile(r"@ClientActive\s*<>\s*(\d+)\b", re.IGNORECASE)
 _NE_REV_RE = re.compile(r"\b(\d+)\s*<>\s*@ClientActive\b", re.IGNORECASE)
+_LE_FWD_RE = re.compile(r"@ClientActive\s*<=\s*(\d+)\b", re.IGNORECASE)
+_LE_REV_RE = re.compile(r"\b(\d+)\s*<=\s*@ClientActive\b", re.IGNORECASE)
+_GE_FWD_RE = re.compile(r"@ClientActive\s*>=\s*(\d+)\b", re.IGNORECASE)
+_GE_REV_RE = re.compile(r"\b(\d+)\s*>=\s*@ClientActive\b", re.IGNORECASE)
+_LT_FWD_RE = re.compile(r"@ClientActive\s*<\s*(\d+)\b", re.IGNORECASE)
+_LT_REV_RE = re.compile(r"\b(\d+)\s*<\s*@ClientActive\b", re.IGNORECASE)
+_GT_FWD_RE = re.compile(r"@ClientActive\s*>\s*(\d+)\b", re.IGNORECASE)
+_GT_REV_RE = re.compile(r"\b(\d+)\s*>\s*@ClientActive\b", re.IGNORECASE)
+_EQ_FWD_RE = re.compile(r"@ClientActive\s*=\s*(\d+)\b", re.IGNORECASE)
+_EQ_REV_RE = re.compile(r"\b(\d+)\s*=\s*@ClientActive\b", re.IGNORECASE)
 _IN_RE = re.compile(r"@ClientActive\s+(NOT\s+)?IN\s*\(([^()]*)\)", re.IGNORECASE)
 
 _OR_SPLIT_RE = re.compile(r"\bOR\b", re.IGNORECASE)
@@ -73,6 +85,22 @@ _AND_SPLIT_RE = re.compile(r"\bAND\b", re.IGNORECASE)
 _ELSE_RE = re.compile(r"\bELSE\b", re.IGNORECASE)
 _IF_RE = re.compile(r"\bIF\b", re.IGNORECASE)
 _BEGIN_OR_NL_RE = re.compile(r"\bBEGIN\b|\n", re.IGNORECASE)
+
+
+def _has_enclosing_parens(s: str) -> bool:
+    """True if s is enclosed by a matching top-level ( ... ) pair."""
+    s = s.strip()
+    if not (s.startswith("(") and s.endswith(")")):
+        return False
+    depth = 0
+    for i, c in enumerate(s):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0 and i < len(s) - 1:
+                return False
+    return depth == 0
 
 
 def _split_top_level(text: str, sep_re: re.Pattern) -> list[str]:
@@ -90,17 +118,67 @@ def _split_top_level(text: str, sep_re: re.Pattern) -> list[str]:
     return parts
 
 
+def _split_and_protect_between(group_text: str) -> list[str]:
+    """Split group_text by AND at depth 0, protecting the internal AND of BETWEEN."""
+    masked_between = _BETWEEN_AND_MASK_RE.sub(
+        lambda m: m.group(1) + " " * len(m.group(2)) + m.group(3),
+        group_text
+    )
+    parts, last = [], 0
+    depth = 0
+    for m in _AND_SPLIT_RE.finditer(masked_between):
+        depth += masked_between[last:m.start()].count("(") - masked_between[last:m.start()].count(")")
+        if depth == 0:
+            parts.append(group_text[last:m.start()])
+            last = m.end()
+    parts.append(group_text[last:])
+    return parts
+
+
 def _eval_term(term: str, cid: int) -> str:
     """One boolean term -> match | no_match | unknown."""
     t = term.strip()
     if not t or not _VAR_RE.search(t):
         return "unknown"
-    m = _EQ_FWD_RE.search(t) or _EQ_REV_RE.search(t)
+    if _has_enclosing_parens(t):
+        return evaluate_condition(t[1:-1].strip(), cid)
+    m = _BETWEEN_RE.search(t)
     if m:
-        return "match" if int(m.group(1)) == cid else "no_match"
+        low, high = int(m.group(2)), int(m.group(3))
+        inside = low <= cid <= high
+        if m.group(1):  # NOT BETWEEN
+            return "no_match" if inside else "match"
+        return "match" if inside else "no_match"
     m = _NE_FWD_RE.search(t) or _NE_REV_RE.search(t)
     if m:
         return "no_match" if int(m.group(1)) == cid else "match"
+    m = _LE_FWD_RE.search(t)
+    if m:
+        return "match" if cid <= int(m.group(1)) else "no_match"
+    m = _LE_REV_RE.search(t)
+    if m:
+        return "match" if int(m.group(1)) <= cid else "no_match"
+    m = _GE_FWD_RE.search(t)
+    if m:
+        return "match" if cid >= int(m.group(1)) else "no_match"
+    m = _GE_REV_RE.search(t)
+    if m:
+        return "match" if int(m.group(1)) >= cid else "no_match"
+    m = _LT_FWD_RE.search(t)
+    if m:
+        return "match" if cid < int(m.group(1)) else "no_match"
+    m = _LT_REV_RE.search(t)
+    if m:
+        return "match" if int(m.group(1)) < cid else "no_match"
+    m = _GT_FWD_RE.search(t)
+    if m:
+        return "match" if cid > int(m.group(1)) else "no_match"
+    m = _GT_REV_RE.search(t)
+    if m:
+        return "match" if int(m.group(1)) > cid else "no_match"
+    m = _EQ_FWD_RE.search(t) or _EQ_REV_RE.search(t)
+    if m:
+        return "match" if int(m.group(1)) == cid else "no_match"
     m = _IN_RE.search(t)
     if m:
         ids = {int(x) for x in re.findall(r"\d+", m.group(2))}
@@ -135,7 +213,7 @@ def evaluate_condition(condition: str | None, client_active_id) -> str:
     masked = _mask(condition)
     if not _VAR_RE.search(masked):
         return "unknown"   # e.g. EXISTS(SELECT ... FROM ClientsActive ...) -- keep + flag
-    groups = [_combine([_eval_term(t, cid) for t in _split_top_level(g, _AND_SPLIT_RE)],
+    groups = [_combine([_eval_term(t, cid) for t in _split_and_protect_between(g)],
                        is_conjunction=True)
               for g in _split_top_level(masked, _OR_SPLIT_RE)]
     return _combine(groups, is_conjunction=False)
@@ -161,16 +239,14 @@ def _unwrap_body(slice_text: str) -> str | None:
         elif w == "END":
             depth -= 1
             if depth == 0:
-                return slice_text[bm.end():m.start()].strip("\r\n ;")
+                return slice_text[bm.end():m.start()]
     return None
 
 
-def _compound_interior(text: str) -> str | None:
+def _compound_interior(text: str) -> tuple[str, int] | None:
     """Interior of a segment that is itself a BEGIN/END compound, with no
     code after the matching END. None for BEGIN TRAN or a partial block.
-    The scope walk descends into this instead of copying the compound
-    verbatim -- otherwise every gate inside the procedure's opening
-    BEGIN is invisible when that BEGIN's END is not the last token."""
+    Returns (unstripped_interior, interior_offset_in_text)."""
     masked = _mask(text)
     lead = len(masked) - len(masked.lstrip())
     if not re.match(r"BEGIN\b", masked[lead:], re.IGNORECASE):
@@ -193,7 +269,7 @@ def _compound_interior(text: str) -> str | None:
                 break
     if end_at is None or masked[close_end:].strip():
         return None
-    return text[bm.end():end_at].strip("\r\n ;")
+    return text[bm.end():end_at], bm.end()
 
 
 def _fingerprint_text(text: str) -> str:
@@ -280,16 +356,21 @@ def _parse_chain(chain_text: str) -> list[dict] | None:
         else:
             return None                      # slice neither IF nor ELSE -> distrust
         tail = raw[past:]
-        if re.search(r"\bBEGIN\b", _mask(tail), re.IGNORECASE):
+        tail_masked = _mask(tail)
+        bm = re.search(r"\bBEGIN\b", tail_masked, re.IGNORECASE)
+        if bm and not _is_begin_tran(tail_masked, bm.end()):
             body = _unwrap_body(tail)
             if body is None:
                 return None                  # unbalanced wrapper -> distrust
             bounded = True
+            body_offset = start + past + bm.end()
         else:
-            body = tail.strip("\r\n ;")
+            body = tail
             bounded = False
+            body_offset = start + past
         branches.append({"kind": kind, "condition": cond, "body": body,
-                         "bounded": bounded})
+                         "bounded": bounded, "start": start, "stop": stop,
+                         "raw": raw, "body_offset": body_offset})
     return branches
 
 
@@ -306,7 +387,11 @@ def _extract_cond(after_if_keyword: str) -> tuple[str | None, int]:
         return (cond or None), m.start()
     g = (_EQ_FWD_RE.search(masked) or _EQ_REV_RE.search(masked)
          or _NE_FWD_RE.search(masked) or _NE_REV_RE.search(masked)
-         or _IN_RE.search(masked))
+         or _LE_FWD_RE.search(masked) or _LE_REV_RE.search(masked)
+         or _GE_FWD_RE.search(masked) or _GE_REV_RE.search(masked)
+         or _LT_FWD_RE.search(masked) or _LT_REV_RE.search(masked)
+         or _GT_FWD_RE.search(masked) or _GT_REV_RE.search(masked)
+         or _BETWEEN_RE.search(masked) or _IN_RE.search(masked))
     if g:
         cond = after_if_keyword[:g.end()].strip(" \t\r\n;")
         return (cond or None), g.end()
@@ -320,13 +405,13 @@ def _segment_body(body_text: str) -> list[dict] | None:
     mode labeling, because block BOUNDARIES survive vocabulary distrust: a
     CURSOR proc's IF/BEGIN/END still balance correctly through the scanner,
     and a provably-dead other-client branch stays provably dead inside it."""
-    segs = _segment_statements(body_text)
+    segs = _segment_statements(body_text, include_offset=True)
     if not segs:
         return None
     out = []
-    for text, line in segs:
+    for text, line, offset in segs:
         kind, condition = _classify(text)
-        out.append({"kind": kind, "condition": condition, "text": text, "line": line})
+        out.append({"kind": kind, "condition": condition, "text": text, "line": line, "offset": offset})
     return out
 
 
@@ -366,11 +451,16 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                          from untrusted structure.
       ok=False           nothing decidable; compare the full definition.
 
-    Returns {"ok": True, mode, relevant_blocks, excluded_blocks, stats,
+    Returns {"ok": True, mode, relevant_blocks, excluded_blocks, excluded_ranges, stats,
              fingerprint (structured only), reason (heuristic caveat)}
     """
-    _, body = diffing.split_param_body(definition)
-    body = _trim_batch_tail((body or definition).strip())
+    definition = (definition or "").replace("\r\n", "\n")
+    _, body, body_offset = diffing.split_param_body(definition, include_offset=True)
+    if not body:
+        body = definition
+        body_offset = 0
+    else:
+        body = _trim_batch_tail(body)
     try:
         cid = int(str(client_active_id).strip())
     except (TypeError, ValueError):
@@ -388,6 +478,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
 
     relevant: list[str] = []
     excluded: list[dict] = []
+    excluded_ranges: list[list[int]] = []
     stats = {"match": 0, "no_match": 0, "unknown": 0, "unknown_client": 0}
 
     def note_unknown(condition: str | None) -> None:
@@ -395,7 +486,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
         if condition and re.search(r"@ClientActive\b", condition, re.IGNORECASE):
             stats["unknown_client"] += 1
 
-    def walk(body_text: str) -> bool:
+    def walk(body_text: str, base_offset: int) -> bool:
         """True = region fully walked; False = no boundaries here (caller of
         a kept branch then keeps its whole text verbatim -- degrade, never
         drop)."""
@@ -404,10 +495,13 @@ def resolve_scope(definition: str, client_active_id) -> dict:
             return False
 
         for seg in segs:
+            seg_abs_offset = base_offset + seg["offset"]
             if seg["kind"] != "IF":
-                interior = _compound_interior(seg["text"])
-                if interior is not None and len(interior) < len(seg["text"]) and walk(interior):
-                    continue
+                comp = _compound_interior(seg["text"])
+                if comp is not None:
+                    interior, interior_offset = comp
+                    if walk(interior, seg_abs_offset + interior_offset):
+                        continue
                 relevant.append(seg["text"])
                 continue
             branches = _parse_chain(seg["text"])
@@ -419,13 +513,13 @@ def resolve_scope(definition: str, client_active_id) -> dict:
             prior_uncertain = False
             emitted = False
 
-            def emit_kept(kind: str, condition: str | None, body: str) -> None:
+            def emit_kept(kind: str, condition: str | None, body: str, body_abs_offset: int) -> None:
                 """Keep the gate line around whatever of this arm still runs."""
                 nonlocal emitted
                 if not (body or "").strip():
                     return
                 mark = len(relevant)
-                if walk(body):
+                if walk(body, body_abs_offset):
                     inner = "\n".join(relevant[mark:])
                     del relevant[mark:]
                 else:
@@ -434,6 +528,12 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 emitted = True
 
             for b in branches:
+                branch_abs_start = seg_abs_offset + b["start"]
+                branch_raw = b["raw"]
+                b_start_line = definition.count("\n", 0, branch_abs_start) + 1
+                b_end_line = definition.count("\n", 0, branch_abs_start + len(branch_raw.rstrip())) + 1
+                b_body_abs_offset = seg_abs_offset + b.get("body_offset", 0)
+
                 if b["kind"] == "else":
                     v = "no_match" if matched else ("unknown" if prior_uncertain else "match")
                 else:
@@ -442,11 +542,14 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     if b.get("bounded"):
                         stats["no_match"] += 1
                         excluded.append({
-                            "line": seg["line"],
+                            "line": b_start_line,
+                            "start_line": b_start_line,
+                            "end_line": b_end_line,
                             "condition": b["condition"] or "(else)",
                             "kind": "else" if b["kind"] == "else" else "other_client",
                             "body": b["body"] or "",
                         })
+                        excluded_ranges.append([b_start_line, b_end_line])
                         continue
                     # Unbraced/unbounded: extent not proven -- keep + flag
                     # (conservative; a wrongly-kept block costs a glance,
@@ -454,18 +557,21 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     note_unknown(b.get("condition"))
                     prior_uncertain = True
                     if b["body"]:
-                        if not walk(b["body"]):
+                        if not walk(b["body"], b_body_abs_offset):
                             if not _KEYWORD_RE.search(_mask(b["body"])):
                                 stats["unknown"] -= 1
                                 if b.get("condition") and re.search(r"@ClientActive\b", b["condition"], re.IGNORECASE):
                                     stats["unknown_client"] -= 1
                                 stats["no_match"] += 1
                                 excluded.append({
-                                    "line": seg["line"],
+                                    "line": b_start_line,
+                                    "start_line": b_start_line,
+                                    "end_line": b_end_line,
                                     "condition": b["condition"] or "(else)",
                                     "kind": "other_client",
                                     "body": b["body"] or "",
                                 })
+                                excluded_ranges.append([b_start_line, b_end_line])
                             else:
                                 relevant.append(b["body"])
                     continue
@@ -476,12 +582,12 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     note_unknown(b.get("condition"))
                     prior_uncertain = True
                 if b.get("bounded"):
-                    emit_kept(b["kind"], b["condition"], b["body"] or "")
-                elif b["body"] and not walk(b["body"]):
+                    emit_kept(b["kind"], b["condition"], b["body"] or "", b_body_abs_offset)
+                elif b["body"] and not walk(b["body"], b_body_abs_offset):
                     relevant.append(b["body"])
         return True
 
-    if not walk(body):
+    if not walk(body, body_offset):
         return {"ok": False,
                 "reason": "body structure not trustworthy for scope resolution "
                           "(unbalanced BEGIN/END); compare the full definition instead"}
@@ -496,6 +602,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
     result = {"ok": True, "mode": "structured" if structured else "heuristic",
               "client_id": cid,
               "relevant_blocks": relevant, "excluded_blocks": excluded,
+              "excluded_ranges": excluded_ranges,
               "stats": stats}
     if structured:
         norm = "\n--BLOCK--\n".join(_fingerprint_text(t) for t in relevant)
