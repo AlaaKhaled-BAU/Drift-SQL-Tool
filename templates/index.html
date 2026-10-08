@@ -48,11 +48,20 @@
         <button type="button" role="tab" class="tool-tab trim-subtab" data-trim-sub="pair" aria-selected="false">Pair</button>
       </nav>
       <section class="block trimmer-panel glass-panel" id="trimSinglePane" data-trim-sub="trim">
-        <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
+        <div class="trim-toolbar">
+          <label class="trim-label">ClientActive ID <input id="trimClientId" type="number" min="1" step="1" placeholder="e.g. 66"></label>
+          <div class="trim-toolbar-actions">
+            <button type="button" id="trimViewSourceBtn" class="ghost sm" hidden title="View full procedure in a high-performance scroll window">View full procedure</button>
+            <button type="button" id="trimClearBtn" class="ghost sm" title="Clear procedure and reset memory">Clear</button>
+          </div>
+        </div>
         <textarea id="trimSource" rows="12" class="trim-source" placeholder="Paste CREATE PROCEDURE …"
           spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
         <p class="paste-status hint" id="trimSourceHint" hidden></p>
-        <button type="button" id="trimRunBtn">Trim to this client</button>
+        <div class="trim-run-bar">
+          <button type="button" id="trimRunBtn">Trim to this client</button>
+          <button type="button" id="trimClearBottomBtn" class="ghost" title="Clear procedure and results">Clear</button>
+        </div>
         <div id="trimSplit" class="trim-split" hidden>
           <div class="trim-split-col">
             <div class="trim-split-head"><span>Original</span></div>
@@ -80,14 +89,33 @@
             <label><input type="radio" name="pairLens" value="active_plus_else"> ClientActive + ELSE</label>
           </div>
           <button type="button" id="pairRunBtn">Compare pair</button>
+          <button type="button" id="pairClearBtn" class="ghost" title="Clear both definitions, diff results, and memory">Clear</button>
         </div>
         <div class="trim-pair-grid">
-          <label>Master (105) definition<textarea id="pairMaster" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
-            spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
-            <p class="paste-status hint" id="pairMasterHint" hidden></p></label>
-          <label>Client definition<textarea id="pairClient" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
-            spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
-            <p class="paste-status hint" id="pairClientHint" hidden></p></label>
+          <div class="pair-col">
+            <div class="pair-col-head">
+              <label for="pairMaster">Master (105) definition</label>
+              <div class="pair-col-actions">
+                <button type="button" id="pairViewMasterBtn" class="ghost sm" hidden title="View full master procedure">View full</button>
+                <button type="button" id="pairClearMasterBtn" class="ghost sm" title="Clear master definition and reset memory">Clear</button>
+              </div>
+            </div>
+            <textarea id="pairMaster" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
+              spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+            <p class="paste-status hint" id="pairMasterHint" hidden></p>
+          </div>
+          <div class="pair-col">
+            <div class="pair-col-head">
+              <label for="pairClient">Client definition</label>
+              <div class="pair-col-actions">
+                <button type="button" id="pairViewClientBtn" class="ghost sm" hidden title="View full client procedure">View full</button>
+                <button type="button" id="pairClearClientBtn" class="ghost sm" title="Clear client definition and reset memory">Clear</button>
+              </div>
+            </div>
+            <textarea id="pairClient" rows="12" class="trim-source" placeholder="CREATE PROCEDURE …"
+              spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+            <p class="paste-status hint" id="pairClientHint" hidden></p>
+          </div>
         </div>
         <section class="pair-result" id="pairResult" hidden>
           <div class="pair-result-bar">
@@ -344,6 +372,25 @@
       </section>
     </div>
   </main>
+<div id="procViewerModal" class="apply-modal proc-modal" hidden role="dialog" aria-labelledby="procViewerTitle" aria-modal="true">
+  <div class="apply-modal-backdrop" id="procViewerBackdrop"></div>
+  <div class="apply-modal-panel proc-viewer-panel">
+    <div class="proc-viewer-head">
+      <div class="proc-viewer-titles">
+        <h2 id="procViewerTitle">Procedure Viewer</h2>
+        <span id="procViewerBadge" class="proc-viewer-badge hint"></span>
+      </div>
+      <div class="proc-viewer-tools">
+        <input type="search" id="procViewerSearch" class="proc-viewer-search" placeholder="Filter lines (type keyword)…" autocomplete="off" spellcheck="false">
+        <button type="button" id="procViewerCopyBtn" class="ghost sm">Copy</button>
+        <span id="procViewerCopyToast" class="copy-toast" hidden>Copied</span>
+        <button type="button" id="procViewerCloseBtn" class="ghost sm" aria-label="Close viewer">✕ Close</button>
+      </div>
+    </div>
+    <div class="proc-viewer-body">
+      <pre id="procViewerPre" class="proc-viewer-pre"></pre>
+    </div>
+  </div>
 </div>
 
 <div id="applyErrorModal" class="apply-modal" hidden role="dialog" aria-labelledby="applyErrorTitle" aria-modal="true">

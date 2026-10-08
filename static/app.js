@@ -2000,11 +2000,24 @@ document.getElementById("pkgDownloadZip")?.addEventListener("click", () => {
 });
 
 const HUGE_PASTE = new WeakMap();
+const EXPANDED_EDITORS = new WeakSet();
 const PASTE_PREVIEW_LINES = 40;
+const FAST_PASTE_THRESHOLD = 50000;
 
 function editorValue(el) {
   if (!el) return "";
   return HUGE_PASTE.get(el) ?? el.value ?? "";
+}
+
+function updateViewFullButton(el, show) {
+  const btnMap = {
+    trimSource: "trimViewSourceBtn",
+    pairMaster: "pairViewMasterBtn",
+    pairClient: "pairViewClientBtn",
+  };
+  const btnId = btnMap[el?.id];
+  const btn = btnId ? document.getElementById(btnId) : null;
+  if (btn) btn.hidden = !show;
 }
 
 function setPasteHint(el, msg) {
@@ -2014,14 +2027,57 @@ function setPasteHint(el, msg) {
   hint.hidden = !msg;
 }
 
+function updatePasteHint(el, fullText) {
+  const hint = document.getElementById(`${el.id}Hint`);
+  if (!hint) return;
+  if (!fullText || !fullText.trim()) {
+    hint.innerHTML = "";
+    hint.hidden = true;
+    updateViewFullButton(el, false);
+    return;
+  }
+  updateViewFullButton(el, true);
+  const n = fullText.split("\n").length;
+  const kb = Math.round(fullText.length / 1024);
+  const isHuge = fullText.length >= FAST_PASTE_THRESHOLD;
+  const isExpanded = EXPANDED_EDITORS.has(el);
+
+  if (isHuge) {
+    if (!isExpanded) {
+      hint.innerHTML = `${n.toLocaleString()} lines in memory (${kb} KB) — showing first ${PASTE_PREVIEW_LINES} lines preview. <button type="button" class="proc-hint-btn" data-action="view">View/Scroll Full</button> · <button type="button" class="proc-hint-btn" data-action="expand">Expand in editor</button>`;
+    } else {
+      hint.innerHTML = `${n.toLocaleString()} lines (${kb} KB) — full procedure expanded in editor. <button type="button" class="proc-hint-btn" data-action="view">View in modal</button> · <button type="button" class="proc-hint-btn" data-action="collapse">Collapse preview</button>`;
+    }
+    hint.hidden = false;
+  } else if (n > 25) {
+    hint.innerHTML = `${n.toLocaleString()} lines (${kb} KB) in editor. <button type="button" class="proc-hint-btn" data-action="view">View full</button>`;
+    hint.hidden = false;
+  } else {
+    hint.innerHTML = "";
+    hint.hidden = true;
+  }
+}
+
+function clearEditorMemory(el) {
+  if (!el) return;
+  HUGE_PASTE.delete(el);
+  EXPANDED_EDITORS.delete(el);
+  el.value = "";
+  const hint = document.getElementById(`${el.id}Hint`);
+  if (hint) {
+    hint.innerHTML = "";
+    hint.hidden = true;
+  }
+  updateViewFullButton(el, false);
+}
+
 function pastePreview(text) {
   return (text || "").split("\n").slice(0, PASTE_PREVIEW_LINES).join("\n");
 }
 
 function rememberPaste(el, text) {
   HUGE_PASTE.set(el, text);
-  const n = text.split("\n").length;
-  setPasteHint(el, `${n.toLocaleString()} lines in memory (${Math.round(text.length / 1024)} KB) — Trim / Pair uses the full paste, not only the lines shown.`);
+  updatePasteHint(el, text);
 }
 
 // The box shows a prefix. An edit is the difference between that prefix and
@@ -2041,32 +2097,68 @@ function bindFastPaste(el) {
   let syncing = false;
   el.addEventListener("paste", (e) => {
     const clip = e.clipboardData?.getData("text/plain") || "";
-    const existing = HUGE_PASTE.get(el);
-    if (!existing && clip.length < 8000) return;
-    e.preventDefault();
-    e.stopPropagation();
+    if (!clip) return;
+    const existing = editorValue(el);
     const start = el.selectionStart ?? 0;
     const end = el.selectionEnd ?? start;
-    const preview = existing ? pastePreview(existing) : "";
-    const replacingAll = !existing || (start === 0 && end === preview.length);
-    const next = (!existing || (replacingAll && clip.length >= 8000))
+    const replacingAll = !existing || (start === 0 && end === el.value.length);
+    const next = (!existing || replacingAll)
       ? clip
       : existing.slice(0, start) + clip + existing.slice(end);
-    rememberPaste(el, next);
-    syncing = true;
-    el.value = pastePreview(next);
-    const caret = Math.min(start + (replacingAll && clip.length >= 8000 ? 0 : clip.length), el.value.length);
-    el.setSelectionRange(caret, caret);
-    syncing = false;
+
+    if (next.length < FAST_PASTE_THRESHOLD) {
+      e.preventDefault();
+      e.stopPropagation();
+      clearEditorMemory(el);
+      el.value = next;
+      const caret = Math.min(start + clip.length, el.value.length);
+      el.setSelectionRange(caret, caret);
+      updatePasteHint(el, next);
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (EXPANDED_EDITORS.has(el)) {
+      HUGE_PASTE.set(el, next);
+      el.value = next;
+      const caret = Math.min(start + clip.length, el.value.length);
+      el.setSelectionRange(caret, caret);
+      updatePasteHint(el, next);
+    } else {
+      rememberPaste(el, next);
+      syncing = true;
+      el.value = pastePreview(next);
+      const caret = Math.min(start + clip.length, el.value.length);
+      el.setSelectionRange(caret, caret);
+      syncing = false;
+    }
   });
+
   el.addEventListener("input", () => {
     if (syncing) return;
+    if (!el.value || el.value.trim() === "") {
+      clearEditorMemory(el);
+      return;
+    }
+    if (EXPANDED_EDITORS.has(el)) {
+      HUGE_PASTE.set(el, el.value);
+      updatePasteHint(el, el.value);
+      return;
+    }
     const full = HUGE_PASTE.get(el);
-    if (!full) return;
+    if (!full) {
+      updatePasteHint(el, el.value);
+      return;
+    }
     const previous = pastePreview(full);
     if (el.value === previous) return;
     const caret = el.selectionStart ?? el.value.length;
     const next = splicePreviewEdit(full, previous, el.value);
+    if (!next || next.trim() === "") {
+      clearEditorMemory(el);
+      return;
+    }
     rememberPaste(el, next);
     const preview = pastePreview(next);
     if (el.value === preview) return;
@@ -2075,6 +2167,29 @@ function bindFastPaste(el) {
     const pos = Math.min(caret, el.value.length);
     el.setSelectionRange(pos, pos);
     syncing = false;
+  });
+
+  const hint = document.getElementById(`${el.id}Hint`);
+  hint?.addEventListener("click", (e) => {
+    const action = e.target.dataset.action;
+    if (!action) return;
+    const full = editorValue(el);
+    if (action === "view") {
+      const titles = {
+        trimSource: "Procedure Definition (Trim)",
+        pairMaster: "Master (105) Procedure Definition",
+        pairClient: "Client Procedure Definition",
+      };
+      openProcedureViewer(titles[el.id] || "Procedure Definition", full);
+    } else if (action === "expand") {
+      EXPANDED_EDITORS.add(el);
+      el.value = full;
+      updatePasteHint(el, full);
+    } else if (action === "collapse") {
+      EXPANDED_EDITORS.delete(el);
+      el.value = pastePreview(full);
+      updatePasteHint(el, full);
+    }
   });
 }
 
@@ -2137,6 +2252,31 @@ document.getElementById("trimRunBtn")?.addEventListener("click", async () => {
     clearBusy(btn);
   }
 });
+
+function clearTrimTab() {
+  const trimSource = document.getElementById("trimSource");
+  clearEditorMemory(trimSource);
+  const split = document.getElementById("trimSplit");
+  if (split) split.hidden = true;
+  const trimOriginal = document.getElementById("trimOriginal");
+  if (trimOriginal) trimOriginal.replaceChildren();
+  const trimOut = document.getElementById("trimOut");
+  if (trimOut) trimOut.textContent = "";
+  const trimHarvest = document.getElementById("trimHarvest");
+  if (trimHarvest) trimHarvest.textContent = "";
+  const trimUnknown = document.getElementById("trimUnknown");
+  if (trimUnknown) {
+    trimUnknown.hidden = true;
+    trimUnknown.textContent = "";
+  }
+  const copyBtn = document.getElementById("trimOutCopyBtn");
+  if (copyBtn) copyBtn.disabled = true;
+  const toast = document.getElementById("trimOutCopyToast");
+  if (toast) toast.hidden = true;
+}
+
+document.getElementById("trimClearBtn")?.addEventListener("click", clearTrimTab);
+document.getElementById("trimClearBottomBtn")?.addEventListener("click", clearTrimTab);
 
 function driftProcFindings(direction) {
   const idx = CURRENT_WORKSPACES[direction];
@@ -2452,6 +2592,130 @@ document.getElementById("pairCopyBtn")?.addEventListener("click", async () => {
   if (!LAST_PAIR_COPY_SQL) return;
   await navigator.clipboard.writeText(LAST_PAIR_COPY_SQL);
   showCopyToast(document.getElementById("pairCopyToast"));
+});
+
+function clearPairTab() {
+  clearEditorMemory(document.getElementById("pairMaster"));
+  clearEditorMemory(document.getElementById("pairClient"));
+
+  const resultEl = document.getElementById("pairResult");
+  if (resultEl) resultEl.hidden = true;
+  const mount = document.getElementById("pairDiff");
+  if (mount) mount.replaceChildren();
+  const statusEl = document.getElementById("pairResultStatus");
+  if (statusEl) {
+    statusEl.textContent = "";
+    statusEl.className = "pair-status";
+  }
+  const legendEl = document.getElementById("pairLegend");
+  if (legendEl) legendEl.hidden = true;
+  const toggleEl = document.getElementById("pairViewToggle");
+  if (toggleEl) toggleEl.hidden = true;
+
+  LAST_PAIR_COPY_SQL = "";
+  LAST_PAIR_LEFT = "";
+  LAST_PAIR_RIGHT = "";
+  LAST_PAIR_IDENTICAL = false;
+
+  const copyBtn = document.getElementById("pairCopyBtn");
+  if (copyBtn) copyBtn.disabled = true;
+  const kindEl = document.getElementById("pairCopyKind");
+  if (kindEl) kindEl.textContent = "";
+  const toast = document.getElementById("pairCopyToast");
+  if (toast) toast.hidden = true;
+}
+
+document.getElementById("pairClearBtn")?.addEventListener("click", clearPairTab);
+document.getElementById("pairClearMasterBtn")?.addEventListener("click", () => {
+  clearEditorMemory(document.getElementById("pairMaster"));
+});
+document.getElementById("pairClearClientBtn")?.addEventListener("click", () => {
+  clearEditorMemory(document.getElementById("pairClient"));
+});
+
+/* ============================== Full Procedure Viewer Modal ============================== */
+
+let CURRENT_VIEWER_TEXT = "";
+
+function renderViewerLines(lines, filterQuery = "") {
+  const preEl = document.getElementById("procViewerPre");
+  if (!preEl) return;
+  if (!lines || !lines.length) {
+    preEl.textContent = "(empty)";
+    return;
+  }
+  const q = (filterQuery || "").trim().toLowerCase();
+  const padLen = Math.max(4, String(lines.length).length);
+  if (!q) {
+    preEl.textContent = lines.map((ln, i) => `${String(i + 1).padStart(padLen, " ")} | ${ln}`).join("\n");
+  } else {
+    const matched = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].toLowerCase().includes(q)) {
+        matched.push(`${String(i + 1).padStart(padLen, " ")} | ${lines[i]}`);
+      }
+    }
+    preEl.textContent = matched.length
+      ? matched.join("\n")
+      : `No lines matching "${filterQuery}" (${lines.length.toLocaleString()} lines searched)`;
+  }
+}
+
+function openProcedureViewer(title, fullText) {
+  const modal = document.getElementById("procViewerModal");
+  const titleEl = document.getElementById("procViewerTitle");
+  const badgeEl = document.getElementById("procViewerBadge");
+  const searchInput = document.getElementById("procViewerSearch");
+  if (!modal) return;
+
+  CURRENT_VIEWER_TEXT = fullText || "";
+  if (titleEl) titleEl.textContent = title || "Procedure Viewer";
+  const lines = CURRENT_VIEWER_TEXT ? CURRENT_VIEWER_TEXT.split("\n") : [];
+  if (badgeEl) {
+    const kb = Math.round(CURRENT_VIEWER_TEXT.length / 1024);
+    badgeEl.textContent = `${lines.length.toLocaleString()} lines · ${kb} KB`;
+  }
+  if (searchInput) searchInput.value = "";
+  renderViewerLines(lines);
+  modal.hidden = false;
+  setTimeout(() => searchInput?.focus(), 50);
+}
+
+function closeProcedureViewer() {
+  const modal = document.getElementById("procViewerModal");
+  const preEl = document.getElementById("procViewerPre");
+  if (modal) modal.hidden = true;
+  if (preEl) preEl.textContent = "";
+  CURRENT_VIEWER_TEXT = "";
+}
+
+document.getElementById("procViewerCloseBtn")?.addEventListener("click", closeProcedureViewer);
+document.getElementById("procViewerBackdrop")?.addEventListener("click", closeProcedureViewer);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("procViewerModal")?.hidden) {
+    closeProcedureViewer();
+  }
+});
+
+document.getElementById("procViewerSearch")?.addEventListener("input", (e) => {
+  const lines = CURRENT_VIEWER_TEXT ? CURRENT_VIEWER_TEXT.split("\n") : [];
+  renderViewerLines(lines, e.target.value);
+});
+
+document.getElementById("procViewerCopyBtn")?.addEventListener("click", async () => {
+  if (!CURRENT_VIEWER_TEXT) return;
+  await navigator.clipboard.writeText(CURRENT_VIEWER_TEXT);
+  showCopyToast(document.getElementById("procViewerCopyToast"));
+});
+
+document.getElementById("trimViewSourceBtn")?.addEventListener("click", () => {
+  openProcedureViewer("Procedure Definition (Trim)", editorValue(document.getElementById("trimSource")));
+});
+document.getElementById("pairViewMasterBtn")?.addEventListener("click", () => {
+  openProcedureViewer("Master (105) Procedure Definition", editorValue(document.getElementById("pairMaster")));
+});
+document.getElementById("pairViewClientBtn")?.addEventListener("click", () => {
+  openProcedureViewer("Client Procedure Definition", editorValue(document.getElementById("pairClient")));
 });
 
 switchTrimSubtab("trim");

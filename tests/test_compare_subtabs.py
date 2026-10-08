@@ -45,6 +45,24 @@ class TestCompareSubtabs(unittest.TestCase):
         self.assertIn('id="trimOut"', html)
         self.assertNotIn('id="trimHarvest"', html)
 
+    def test_trimmer_clear_and_procedure_viewer_markup(self):
+        html = self.client.get("/").data.decode("utf-8")
+        # Clear buttons on both tabs
+        self.assertIn('id="trimClearBtn"', html)
+        self.assertIn('id="trimClearBottomBtn"', html)
+        self.assertIn('id="pairClearBtn"', html)
+        self.assertIn('id="pairClearMasterBtn"', html)
+        self.assertIn('id="pairClearClientBtn"', html)
+        # Procedure viewer controls
+        self.assertIn('id="trimViewSourceBtn"', html)
+        self.assertIn('id="pairViewMasterBtn"', html)
+        self.assertIn('id="pairViewClientBtn"', html)
+        self.assertIn('id="procViewerModal"', html)
+        self.assertIn('id="procViewerPre"', html)
+        self.assertIn('id="procViewerSearch"', html)
+        self.assertIn('id="procViewerCopyBtn"', html)
+        self.assertIn('id="procViewerCloseBtn"', html)
+
     def test_copy_buttons_in_index(self):
         html = self.client.get("/").data.decode("utf-8")
         for bid in (
