@@ -301,7 +301,13 @@ def _as_create_or_alter(definition: str, settings: dict | None = None) -> str:
                     f"{definition.rstrip()}"
     else:
         start, end = loc
-        rewritten = (definition[:start] + "CREATE OR ALTER" + definition[end:]).rstrip()
+        rest = definition[end:]
+        # A definition that already says CREATE OR ALTER must stay one phrase.
+        # Rewriting the CREATE keyword again yields CREATE OR ALTER OR ALTER.
+        if re.match(r"(?is)^\s+or\s+alter\b", rest):
+            rewritten = definition.rstrip()
+        else:
+            rewritten = (definition[:start] + "CREATE OR ALTER" + rest).rstrip()
 
     if settings:
         ansi = "ON" if settings.get("ansi_nulls") else "OFF"

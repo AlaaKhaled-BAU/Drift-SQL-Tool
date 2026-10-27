@@ -325,5 +325,132 @@ class DeclareHoist(unittest.TestCase):
         self.assertIn("shared", r["trimmed_sql"])
 
 
+class TrimmerBatchTests(unittest.TestCase):
+    def test_select_stays_select(self):
+        result = trim_procedure("SELECT 1 AS id", 62)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["trimmed_sql"], "SELECT 1 AS id")
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+        self.assertNotIn("BEGIN", result["trimmed_sql"])
+
+    def test_procedure_keeps_the_matching_branch(self):
+        src = (
+            "CREATE PROCEDURE dbo.P @ClientActive int AS BEGIN "
+            "IF @ClientActive = 62 BEGIN SELECT 62 END ELSE BEGIN SELECT 1 END END"
+        )
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["trimmed_sql"].startswith("CREATE PROCEDURE"))
+        self.assertIn("SELECT 62", result["trimmed_sql"])
+        self.assertNotIn("SELECT 1", result["trimmed_sql"])
+
+    def test_function_stays_function(self):
+        src = "CREATE FUNCTION dbo.F() RETURNS int AS BEGIN RETURN 1 END"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertIn("FUNCTION", result["trimmed_sql"])
+        self.assertIn("BEGIN", result["trimmed_sql"])
+        self.assertIn("RETURN 1", result["trimmed_sql"])
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+
+    def test_inline_tvf_is_returned_executable(self):
+        src = "CREATE FUNCTION dbo.F() RETURNS TABLE AS RETURN SELECT 1 AS id"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertIn("RETURNS TABLE", result["trimmed_sql"])
+        self.assertIn("RETURN SELECT 1 AS id", result["trimmed_sql"])
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+        self.assertNotIn("CREATE PROCEDURE", result["trimmed_sql"])
+
+    def test_view_stays_view(self):
+        src = "CREATE VIEW dbo.V AS SELECT 1 AS id"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertTrue(result["trimmed_sql"].lstrip().upper().startswith("CREATE VIEW"))
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+
+    def test_create_or_alter_procedure_is_a_module(self):
+        src = "CREATE OR ALTER PROCEDURE dbo.P @ClientActive int AS BEGIN SELECT 1 END"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertIn("CREATE OR ALTER PROCEDURE", result["trimmed_sql"])
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+
+    def test_create_or_alter_survives_a_second_trim(self):
+        src = "CREATE OR ALTER PROCEDURE dbo.P @ClientActive int AS BEGIN SELECT 1 END"
+        once = trim_procedure(src, 62)
+        self.assertTrue(once["ok"], once.get("reason"))
+        twice = trim_procedure(once["trimmed_sql"], 62)
+        self.assertTrue(twice["ok"], twice.get("reason"))
+        self.assertIn("CREATE OR ALTER PROCEDURE", twice["trimmed_sql"])
+        self.assertNotIn("CREATE OR ALTER OR ALTER", twice["trimmed_sql"])
+        self.assertEqual(twice["trimmed_sql"].upper().count("CREATE OR ALTER"), 1)
+        self.assertNotIn("Unknown", twice["trimmed_sql"])
+
+    def test_leading_comment_before_create_stays_a_module(self):
+        src = "-- keep me\nCREATE PROCEDURE dbo.P @ClientActive int AS BEGIN SELECT 1 END"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertIn("-- keep me", result["trimmed_sql"])
+        self.assertIn("CREATE PROCEDURE", result["trimmed_sql"])
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+
+    def test_use_batch_stays_use(self):
+        src = (
+            "USE [Olives_BO]\nGO\nSET ANSI_NULLS ON\nGO\n"
+            "CREATE PROCEDURE dbo.P @id int AS BEGIN SELECT @id END"
+        )
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertIn("USE [Olives_BO]", result["trimmed_sql"])
+        self.assertNotIn("-- omitted USE", result["trimmed_sql"])
+        self.assertIn("SET ANSI_NULLS ON", result["trimmed_sql"])
+        self.assertIn("\nGO\n", result["trimmed_sql"])
+
+    def test_go_inside_a_string_does_not_split(self):
+        src = "SELECT 'line\nGO\nline' AS q"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertEqual(result["trimmed_sql"].count("GO"), 1)
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+
+    def test_string_containing_create_procedure_is_not_a_module(self):
+        src = "SELECT 'CREATE PROCEDURE dbo.Fake AS SELECT 1' AS q"
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+        self.assertNotIn("CREATE PROCEDURE [dbo].[Unknown]", result["trimmed_sql"])
+        self.assertTrue(result["trimmed_sql"].lstrip().upper().startswith("SELECT"))
+
+    def test_invalid_id_on_a_module_is_not_ok(self):
+        src = "CREATE PROCEDURE dbo.P @ClientActive int AS BEGIN SELECT 1 END"
+        result = trim_procedure(src, "nope")
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["trimmed_sql"])
+
+    def test_unbalanced_module_returns_the_original_batch(self):
+        src = (
+            "CREATE PROCEDURE dbo.P @ClientActive int AS BEGIN "
+            "IF @ClientActive = 62 BEGIN SELECT 62 END"
+        )
+        result = trim_procedure(src, 62)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["trimmed_sql"], src)
+        self.assertTrue(result["reason"])
+
+    def test_loose_client_active_is_executable_and_not_a_procedure(self):
+        result = trim_procedure("SELECT @ClientActive AS id", 62)
+        self.assertTrue(result["ok"], result.get("reason"))
+        self.assertNotIn("CREATE PROCEDURE", result["trimmed_sql"])
+        self.assertNotIn("Unknown", result["trimmed_sql"])
+        self.assertIn("DECLARE @ClientActive int = 62", result["trimmed_sql"])
+        self.assertIn("SELECT @ClientActive AS id", result["trimmed_sql"])
+
+    def test_omitted_id_on_a_batch_with_no_gates_returns_the_select(self):
+        result = trim_procedure("SELECT 1 AS id", None)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["trimmed_sql"], "SELECT 1 AS id")
+
+
 if __name__ == "__main__":
     unittest.main()
