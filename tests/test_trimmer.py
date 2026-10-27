@@ -266,5 +266,64 @@ END"""
         self.assertEqual(r["harvest"][0]["end_line"], 13)
 
 
+DECLARE_TABLE = """CREATE PROCEDURE [dbo].[zz_decl]
+AS
+BEGIN
+IF @ClientActive IN (74, 94)
+BEGIN
+  DECLARE @OT_ActionLog_Tmp TABLE (AutoID int PRIMARY KEY)
+  INSERT INTO @OT_ActionLog_Tmp SELECT 1
+END
+UPDATE OT_CustomerMF SET A = 1
+FROM @OT_ActionLog_Tmp AS i
+WHERE @ClientActive NOT IN (136, 142)
+END"""
+
+DECLARE_SCALAR = """CREATE PROCEDURE [dbo].[zz_scalar]
+AS
+BEGIN
+IF @ClientActive = 35
+BEGIN
+  DECLARE @AviItemsCount int = (SELECT COUNT(*) FROM Items)
+END
+UPDATE OT_SalesmanMF SET AviItemsCount = @AviItemsCount
+END"""
+
+TEMP_TABLE = """CREATE PROCEDURE [dbo].[zz_temp]
+AS
+BEGIN
+IF @ClientActive = 35
+BEGIN
+  CREATE TABLE #OnlyTheirs (id int)
+  INSERT INTO #OnlyTheirs SELECT 1
+END
+SELECT 1 AS shared
+END"""
+
+
+class DeclareHoist(unittest.TestCase):
+    def test_table_variable_declare_is_prepended_without_its_insert(self):
+        r = trim_procedure(DECLARE_TABLE, 248)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertRegex(sql, r"(?i)DECLARE\s+@OT_ActionLog_Tmp\s+TABLE")
+        self.assertIn("FROM @OT_ActionLog_Tmp", sql)
+        self.assertNotIn("INSERT INTO @OT_ActionLog_Tmp", sql)
+
+    def test_scalar_initializer_is_stripped(self):
+        r = trim_procedure(DECLARE_SCALAR, 248)
+        self.assertTrue(r["ok"], r.get("reason"))
+        sql = r["trimmed_sql"]
+        self.assertRegex(sql, r"(?i)DECLARE\s+@AviItemsCount\s+int")
+        self.assertNotIn("SELECT COUNT", sql)
+        self.assertIn("@AviItemsCount", sql)
+
+    def test_temp_table_is_not_hoisted(self):
+        r = trim_procedure(TEMP_TABLE, 248)
+        self.assertTrue(r["ok"], r.get("reason"))
+        self.assertNotIn("#OnlyTheirs", r["trimmed_sql"])
+        self.assertIn("shared", r["trimmed_sql"])
+
+
 if __name__ == "__main__":
     unittest.main()

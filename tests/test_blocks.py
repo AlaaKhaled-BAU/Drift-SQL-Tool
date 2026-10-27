@@ -14,7 +14,7 @@ from pathlib import Path
 # test_statements.py -- see its docstring), so drift-tool/ goes on sys.path
 # and the `drift` package provides the namespace.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from drift.blocks import evaluate_condition, resolve_scope  # noqa: E402
+from drift.blocks import _extract_cond, evaluate_condition, resolve_scope  # noqa: E402
 
 
 def _proc(body: str) -> str:
@@ -243,19 +243,111 @@ class ScopeResolution(unittest.TestCase):
         joined = "\n".join(r["relevant_blocks"])
         self.assertNotIn("other", joined)
 
-    def test_unbraced_single_statement_no_match_still_conservative(self):
-        """IF @ClientActive = 123 UPDATE ... with no BEGIN: extent is one statement;
-        that statement must not survive for client 8 if we can classify it.
-        If the segmenter cannot split, today's rule keeps it — this test
-        documents the bounded=false + UPDATE keyword path stays KEEP only
-        when we cannot prove the IF wraps just that UPDATE.
-        """
+    def test_unbraced_single_statement_no_match_is_excluded(self):
         r = resolve_scope(_proc(
             "IF @ClientActive = 123\n UPDATE T SET A = 1\nSELECT 2"), 8)
         self.assertTrue(r["ok"], r.get("reason"))
         joined = " ".join("\n".join(r["relevant_blocks"]).split())
-        self.assertIn("UPDATE T SET A = 1", joined)
+        self.assertNotIn("UPDATE T SET A = 1", joined)
         self.assertIn("SELECT 2", joined)
+
+    def test_unbraced_body_following_statement_is_not_part_of_the_if(self):
+        r = resolve_scope(_proc(
+            "IF @ClientActive = 123\n UPDATE T SET A = 1\n DELETE FROM T\nSELECT 2"), 8)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = " ".join("\n".join(r["relevant_blocks"]).split())
+        self.assertNotIn("UPDATE T SET A = 1", joined)
+        self.assertIn("DELETE FROM T", joined)
+        self.assertIn("SELECT 2", joined)
+
+    def test_extract_cond_spans_newlines_and_parenthesized_select(self):
+        src = (
+            "@ClientActive = 27 OR @ClientActive = 30\n"
+            "OR @ClientActive = 67\n"
+            "BEGIN\n"
+            "  SELECT 1\n"
+            "END"
+        )
+        cond, offset = _extract_cond(src)
+        self.assertIn("OR @ClientActive = 67", cond)
+        self.assertTrue(src[offset:].lstrip().upper().startswith("BEGIN"))
+
+        sub = (
+            "@ClientActive = 15 AND @SalesmanNo NOT IN (SELECT id FROM salespersons)\n"
+            "BEGIN\n  SELECT 1\nEND"
+        )
+        cond, offset = _extract_cond(sub)
+        self.assertIn("SELECT id FROM salespersons", cond)
+        self.assertTrue(sub[offset:].lstrip().upper().startswith("BEGIN"))
+
+    def test_goto_target_inside_other_client_branch_is_kept(self):
+        body = (
+            "GOTO SkipMe\n"
+            "IF @ClientActive = 27\n"
+            "BEGIN\n"
+            "SkipMe:\n"
+            "  SELECT 1 AS landed\n"
+            "END\n"
+            "SELECT 2 AS after"
+        )
+        r = resolve_scope(_proc(body), 248)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertIn("SkipMe:", joined)
+        self.assertIn("landed", joined)
+        self.assertIn("GOTO SkipMe", joined)
+
+    def test_goto_whose_target_is_in_the_same_excluded_branch_stays_excluded(self):
+        body = (
+            "IF @ClientActive = 27\n"
+            "BEGIN\n"
+            "  GOTO SkipMe\n"
+            "  SkipMe:\n"
+            "  SELECT 1 AS inside\n"
+            "END\n"
+            "SELECT 2 AS after"
+        )
+        r = resolve_scope(_proc(body), 248)
+        self.assertTrue(r["ok"], r.get("reason"))
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertNotIn("inside", joined)
+        self.assertIn("after", joined)
+
+    def test_else_if_with_extra_whitespace_stays_in_the_ladder(self):
+        body = (
+            "IF @ClientActive = 18\nBEGIN\n SELECT 'eighteen'\nEND\n"
+            "ELSE  IF @ClientActive = 163\nBEGIN\n SELECT 'one-six-three'\nEND\n"
+            "ELSE\nIF @ClientActive <> 30 AND @ClientActive <> 67\n"
+            "BEGIN\n SELECT 'rest'\nEND"
+        )
+        joined = "\n".join(resolve_scope(_proc(body), 136)["relevant_blocks"])
+        self.assertIn("IF @ClientActive <> 30", joined)
+        self.assertIn("rest", joined)
+        self.assertNotIn("eighteen", joined)
+        self.assertNotIn("one-six-three", joined)
+        self.assertNotIn("ELSE", joined.upper())
+
+    def test_subquery_condition_excludes_arm_and_promotes_next(self):
+        body = (
+            "IF @ClientActive = 8\nBEGIN\n  SELECT 'eight'\nEND\n"
+            "ELSE IF @ClientActive = 15 AND @IsMakeOrder = 1 AND @SalesmanNo NOT IN (SELECT id FROM salespersons WHERE VehicleId = 93)\n"
+            "BEGIN\n  INSERT INTO OT_StoreItemsQty SELECT 0\nEND\n"
+            "ELSE IF @ClientActive = 49\nBEGIN\n  SELECT 'forty-nine'\nEND\n"
+            "SELECT 'shared'"
+        )
+        kept_for_49 = "\n".join(resolve_scope(_proc(body), 49)["relevant_blocks"])
+        self.assertNotIn("OT_StoreItemsQty", kept_for_49)
+        self.assertNotIn("VehicleId", kept_for_49)
+        self.assertIn("IF @ClientActive = 49", kept_for_49)
+        self.assertNotIn("ELSE IF @ClientActive = 49", kept_for_49)
+        self.assertIn("forty-nine", kept_for_49)
+        self.assertIn("shared", kept_for_49)
+        self.assertNotIn("eight", kept_for_49)
+
+        kept_for_248 = "\n".join(resolve_scope(_proc(body), 248)["relevant_blocks"])
+        self.assertNotIn("forty-nine", kept_for_248)
+        self.assertNotIn("OT_StoreItemsQty", kept_for_248)
+        self.assertIn("shared", kept_for_248)
 
 
 class FingerprintSemantics(unittest.TestCase):
@@ -351,19 +443,17 @@ class HeuristicTier(unittest.TestCase):
         self.assertEqual(r["excluded_blocks"][0]["condition"], "@ClientActive <> 66")
         self.assertNotIn("'not-ours'", "\n".join(r["relevant_blocks"]))
 
-    def test_unbraced_gate_inside_cursor_proc_is_never_excluded(self):
+    def test_unbraced_one_statement_inside_cursor_proc_is_excluded(self):
         body = ("DECLARE c CURSOR FOR SELECT 1\nOPEN c\nFETCH NEXT FROM c INTO @i\n"
                 "IF @ClientActive = 165 UPDATE T SET A = 1\n"
                 "CLOSE c\nDEALLOCATE c")
         r = resolve_scope(_proc(body), 66)
-        # Unbraced/unbounded gates are NEVER excluded (no proven extent):
-        # either the proc is refused outright or the gate stays flagged
-        # unknown with its text kept.
-        if r["ok"]:
-            self.assertEqual(
-                [e for e in r["excluded_blocks"] if "165" in (e["condition"] or "")],
-                [])
-            self.assertIn("UPDATE T", "\n".join(r["relevant_blocks"]))
+        self.assertTrue(r["ok"], r.get("reason"))
+        self.assertEqual(r["mode"], "heuristic")
+        joined = "\n".join(r["relevant_blocks"])
+        self.assertNotIn("UPDATE T", joined)
+        self.assertIn("CLOSE c", joined)
+        self.assertIn("DEALLOCATE c", joined)
 
 
 if __name__ == "__main__":

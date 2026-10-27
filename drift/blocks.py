@@ -55,7 +55,6 @@ _begin_end_re = statements._BEGIN_END_RE                 # noqa: SLF001
 _is_begin_tran = statements._is_begin_tran               # noqa: SLF001
 _segment_statements = statements._segment_statements     # noqa: SLF001
 _classify = statements._classify                         # noqa: SLF001
-_KEYWORD_RE = statements._KEYWORD_RE                     # noqa: SLF001
 
 _VAR_RE = re.compile(r"@ClientActive\b", re.IGNORECASE)
 
@@ -84,7 +83,14 @@ _OR_SPLIT_RE = re.compile(r"\bOR\b", re.IGNORECASE)
 _AND_SPLIT_RE = re.compile(r"\bAND\b", re.IGNORECASE)
 _ELSE_RE = re.compile(r"\bELSE\b", re.IGNORECASE)
 _IF_RE = re.compile(r"\bIF\b", re.IGNORECASE)
-_BEGIN_OR_NL_RE = re.compile(r"\bBEGIN\b|\n", re.IGNORECASE)
+_BODY_START_RE = re.compile(
+    r"\b(BEGIN|SELECT|INSERT|UPDATE|DELETE|MERGE|EXEC|EXECUTE|DECLARE|SET|PRINT|"
+    r"RAISERROR|THROW|WITH|COMMIT|ROLLBACK|TRUNCATE|RETURN|GOTO|WAITFOR|"
+    r"CREATE|ALTER|DROP|WHILE|IF)\b",
+    re.IGNORECASE,
+)
+_LABEL_RE = re.compile(r"(?im)^[ \t]*([A-Za-z_]\w*)[ \t]*:")
+_GOTO_RE = re.compile(r"(?i)\bGOTO\s+([A-Za-z_]\w*)")
 
 
 def _has_enclosing_parens(s: str) -> bool:
@@ -267,7 +273,9 @@ def _compound_interior(text: str) -> tuple[str, int] | None:
             if depth == 0:
                 end_at, close_end = m.start(), m.end()
                 break
-    if end_at is None or masked[close_end:].strip():
+    tail = masked[close_end:]
+    # END TRY / END CATCH: the word after END is the block kind, not more code.
+    if tail.strip() and not re.fullmatch(r"\s*(?:TRY|CATCH)\s*", tail, re.IGNORECASE):
         return None
     return text[bm.end():end_at], bm.end()
 
@@ -344,15 +352,21 @@ def _parse_chain(chain_text: str) -> list[dict] | None:
             im2 = _IF_RE.search(raw_masked)
             cond, past_rel = _extract_cond(raw[im2.end():])
             past = im2.end() + past_rel
-        elif head.startswith("ELSE IF"):     # ELSE IF <cond>
-            kind = "elseif"
+        elif _ELSE_RE.match(raw_masked.lstrip()):
             em = _ELSE_RE.search(raw_masked)
-            cond, past_rel = _extract_cond(raw[em.end():])
-            past = em.end() + past_rel
-        elif head.startswith("ELSE"):
-            kind = "else"
-            cond = None
-            past = _ELSE_RE.search(raw_masked).end()
+            after_else = raw[em.end():]
+            # `ELSE IF`, `ELSE  IF`, and `ELSE\nIF` are one arm. A single
+            # space is not the only legal separator.
+            m_lead_if = re.match(r"\s*IF\b", _mask(after_else), re.IGNORECASE)
+            if m_lead_if:
+                kind = "elseif"
+                skip = m_lead_if.end()
+                cond, past_rel = _extract_cond(after_else[skip:])
+                past = em.end() + skip + past_rel
+            else:
+                kind = "else"
+                cond = None
+                past = em.end()
         else:
             return None                      # slice neither IF nor ELSE -> distrust
         tail = raw[past:]
@@ -375,27 +389,42 @@ def _parse_chain(chain_text: str) -> list[dict] | None:
 
 
 def _extract_cond(after_if_keyword: str) -> tuple[str | None, int]:
-    """(condition, offset_past_condition) -- text between IF and the first
-    BEGIN-or-newline, same fallback shape as statements._classify. When the
-    branch is an unbraced ONE-LINER (no BEGIN, no newline before the body
-    statement), the condition ends where the recognized gate pattern ends --
-    otherwise the statement text would be swallowed into the condition."""
+    """(condition, offset_past_condition).
+
+    The condition runs until a body keyword at parenthesis depth 0.
+    Newlines do not end it. A SELECT inside NOT IN (...) does not end it.
+    """
     masked = _mask(after_if_keyword)
-    m = _BEGIN_OR_NL_RE.search(masked)
-    if m:
-        cond = after_if_keyword[:m.start()].strip(" \t\r\n;")
-        return (cond or None), m.start()
-    g = (_EQ_FWD_RE.search(masked) or _EQ_REV_RE.search(masked)
-         or _NE_FWD_RE.search(masked) or _NE_REV_RE.search(masked)
-         or _LE_FWD_RE.search(masked) or _LE_REV_RE.search(masked)
-         or _GE_FWD_RE.search(masked) or _GE_REV_RE.search(masked)
-         or _LT_FWD_RE.search(masked) or _LT_REV_RE.search(masked)
-         or _GT_FWD_RE.search(masked) or _GT_REV_RE.search(masked)
-         or _BETWEEN_RE.search(masked) or _IN_RE.search(masked))
-    if g:
-        cond = after_if_keyword[:g.end()].strip(" \t\r\n;")
-        return (cond or None), g.end()
-    return (after_if_keyword.strip(" \t\r\n;") or None), len(after_if_keyword)
+    paren = 0
+    i = 0
+    n = len(masked)
+    while i < n:
+        ch = masked[i]
+        if ch == "(":
+            paren += 1
+            i += 1
+            continue
+        if ch == ")":
+            paren = max(0, paren - 1)
+            i += 1
+            continue
+        if paren == 0:
+            m = _BODY_START_RE.match(masked, i)
+            if m:
+                cond = after_if_keyword[:i].strip(" \t\r\n;")
+                return (cond or None), i
+        i += 1
+    cond = after_if_keyword.strip(" \t\r\n;")
+    return (cond or None), len(after_if_keyword)
+
+
+def _outside_goto_targets(full_masked: str, branch_start: int, branch_stop: int) -> set[str]:
+    outside = full_masked[:branch_start] + full_masked[branch_stop:]
+    return {m.group(1).lower() for m in _GOTO_RE.finditer(outside)}
+
+
+def _labels_in(masked: str) -> set[str]:
+    return {m.group(1).lower() for m in _LABEL_RE.finditer(masked)}
 
 
 def _segment_body(body_text: str) -> list[dict] | None:
@@ -467,6 +496,17 @@ def resolve_scope(definition: str, client_active_id) -> dict:
         return {"ok": False, "reason": f"invalid client_active_id {client_active_id!r}"}
 
     masked_body = _mask(body)
+
+    def targeted(raw: str, def_abs_start: int) -> bool:
+        rel = def_abs_start - body_offset
+        if rel < 0:
+            return False
+        labels = _labels_in(_mask(raw))
+        if not labels:
+            return False
+        outside = _outside_goto_targets(masked_body, rel, rel + len(raw))
+        return bool(labels & outside)
+
     top_segs = _segment_body(body)
     if top_segs is None:
         return {"ok": False,
@@ -500,7 +540,18 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 comp = _compound_interior(seg["text"])
                 if comp is not None:
                     interior, interior_offset = comp
+                    mark = len(relevant)
                     if walk(interior, seg_abs_offset + interior_offset):
+                        head = re.match(
+                            r"\s*BEGIN\s+(TRY|CATCH)\b",
+                            _mask(seg["text"]),
+                            re.IGNORECASE,
+                        )
+                        if head:
+                            inner = "\n".join(relevant[mark:]).strip("\n")
+                            del relevant[mark:]
+                            kind = head.group(1).upper()
+                            relevant.append(f"BEGIN {kind}\n{inner}\nEND {kind}")
                         continue
                 relevant.append(seg["text"])
                 continue
@@ -513,6 +564,14 @@ def resolve_scope(definition: str, client_active_id) -> dict:
             prior_uncertain = False
             emitted = False
 
+            def _merge_label_lines(source: str, inner: str) -> str:
+                """Statement segmentation often drops standalone GOTO labels."""
+                extra = [ln for ln in source.splitlines()
+                         if _LABEL_RE.match(ln) and ln.strip() not in (inner or "")]
+                if not extra:
+                    return inner
+                return "\n".join(extra + ([inner] if (inner or "").strip() else []))
+
             def emit_kept(kind: str, condition: str | None, body: str, body_abs_offset: int) -> None:
                 """Keep the gate line around whatever of this arm still runs."""
                 nonlocal emitted
@@ -524,6 +583,7 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     del relevant[mark:]
                 else:
                     inner = body
+                inner = _merge_label_lines(body, inner)
                 relevant.append(_render_kept_branch(kind, condition, inner, leading=not emitted))
                 emitted = True
 
@@ -540,6 +600,11 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                     v = evaluate_condition(b["condition"], cid)
                 if v == "no_match":
                     if b.get("bounded"):
+                        if targeted(branch_raw, branch_abs_start):
+                            note_unknown(b.get("condition"))
+                            prior_uncertain = True
+                            emit_kept(b["kind"], b["condition"], b["body"] or "", b_body_abs_offset)
+                            continue
                         stats["no_match"] += 1
                         excluded.append({
                             "line": b_start_line,
@@ -551,29 +616,30 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                         })
                         excluded_ranges.append([b_start_line, b_end_line])
                         continue
-                    # Unbraced/unbounded: extent not proven -- keep + flag
-                    # (conservative; a wrongly-kept block costs a glance,
-                    # a wrongly-excluded one is a missed change).
+                    # Unbraced/unbounded
+                    if targeted(branch_raw, branch_abs_start):
+                        note_unknown(b.get("condition"))
+                        prior_uncertain = True
+                        emit_kept(b["kind"], b["condition"], b["body"] or "", b_body_abs_offset)
+                        continue
+                    body_segs = _segment_body(b["body"] or "")
+                    if body_segs is not None and len(body_segs) == 1:
+                        stats["no_match"] += 1
+                        excluded.append({
+                            "line": b_start_line,
+                            "start_line": b_start_line,
+                            "end_line": b_end_line,
+                            "condition": b["condition"] or "(else)",
+                            "kind": "else" if b["kind"] == "else" else "other_client",
+                            "body": b["body"] or "",
+                        })
+                        excluded_ranges.append([b_start_line, b_end_line])
+                        continue
                     note_unknown(b.get("condition"))
                     prior_uncertain = True
                     if b["body"]:
                         if not walk(b["body"], b_body_abs_offset):
-                            if not _KEYWORD_RE.search(_mask(b["body"])):
-                                stats["unknown"] -= 1
-                                if b.get("condition") and re.search(r"@ClientActive\b", b["condition"], re.IGNORECASE):
-                                    stats["unknown_client"] -= 1
-                                stats["no_match"] += 1
-                                excluded.append({
-                                    "line": b_start_line,
-                                    "start_line": b_start_line,
-                                    "end_line": b_end_line,
-                                    "condition": b["condition"] or "(else)",
-                                    "kind": "other_client",
-                                    "body": b["body"] or "",
-                                })
-                                excluded_ranges.append([b_start_line, b_end_line])
-                            else:
-                                relevant.append(b["body"])
+                            relevant.append(b["body"])
                     continue
                 if v == "match":
                     stats["match"] += 1
@@ -581,7 +647,10 @@ def resolve_scope(definition: str, client_active_id) -> dict:
                 else:
                     note_unknown(b.get("condition"))
                     prior_uncertain = True
-                if b.get("bounded"):
+                if b.get("bounded") or v != "match":
+                    # A definite match of an unbraced arm is just its statement.
+                    # An unknown unbraced arm must keep the condition, or the
+                    # statement would run for every client.
                     emit_kept(b["kind"], b["condition"], b["body"] or "", b_body_abs_offset)
                 elif b["body"] and not walk(b["body"], b_body_abs_offset):
                     relevant.append(b["body"])

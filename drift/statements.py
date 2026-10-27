@@ -51,6 +51,7 @@ _TOP_LEVEL_KEYWORDS = (
     "IF", "WHILE", "DECLARE", "SET", "PRINT", "RAISERROR", "THROW",
     "WITH", "COMMIT", "ROLLBACK", "TRUNCATE", "RETURN", "GOTO", "WAITFOR",
     "CREATE", "ALTER", "DROP", "BEGIN",
+    "OPEN", "FETCH", "CLOSE", "DEALLOCATE",
 )
 _KEYWORD_RE = re.compile(r"\b(" + "|".join(_TOP_LEVEL_KEYWORDS) + r")\b", re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -150,6 +151,22 @@ def _strip_outer_begin_end(body: str) -> tuple:
     return body[first.end():close_start], first.end()
 
 
+def _paren_depths(masked: str, positions: list[int]) -> dict[int, int]:
+    """Parenthesis depth at each offset. Strings and comments are already
+    blanked in `masked`, so a '(' inside a literal does not count."""
+    wanted = set(positions)
+    depth = 0
+    found: dict[int, int] = {}
+    for i, ch in enumerate(masked):
+        if i in wanted:
+            found[i] = depth
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+    return found
+
+
 def _segment_statements(body: str, include_offset: bool = False) -> list:
     """[(text, line), ...] -- byte-exact source slices, found by this
     module's own depth-tracked keyword scan, not by asking sqlglot to
@@ -196,12 +213,15 @@ def _segment_statements(body: str, include_offset: bool = False) -> list:
         if word != "BEGIN":  # BEGIN already classified as tran/begin above
             events.append((m.start(), "keyword", word))
     events.sort(key=lambda e: e[0])
+    paren_at = _paren_depths(masked, [pos for pos, _kind, _word in events])
 
     depth = 0
-    suppress_next = False  # one-shot: consumed by the very next begin/tran/keyword
+    suppress_next = False  # one-shot: consumed by the very next begin/tran/keyword at paren depth 0
     open_word = None  # leading keyword of whichever segment is currently open
     bounds = []
     for pos, kind, word in events:
+        if paren_at.get(pos, 0) > 0:
+            continue
         if kind == "begin":
             if depth == 0:
                 if not suppress_next:
@@ -225,7 +245,9 @@ def _segment_statements(body: str, include_offset: bool = False) -> list:
                     continue
                 if not suppress_next:
                     bounds.append(pos)
-                    open_word = word
+                # A suppressed keyword is the body statement. UPDATE ... SET
+                # stays one statement only if that UPDATE becomes open_word.
+                open_word = word
                 suppress_next = word in ("IF", "WHILE")
 
     bounds = sorted(set(bounds))

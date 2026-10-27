@@ -207,6 +207,28 @@ def test_nested_comment_does_not_change_begin_end_depth():
     assert "SELECT 1" in text
 
 
+def test_select_inside_if_condition_does_not_split_the_statement():
+    """NOT IN (SELECT …) is still the IF condition. The SELECT must not
+    become its own segment, and the BEGIN body must stay on that same IF."""
+    body = (
+        "IF @ClientActive = 15 AND @SalesmanNo NOT IN (SELECT id FROM salespersons WHERE VehicleId = 93)\n"
+        "BEGIN\n"
+        "  INSERT INTO T SELECT 1\n"
+        "END\n"
+        "ELSE IF @ClientActive = 49\n"
+        "BEGIN\n"
+        "  SELECT 'forty-nine'\n"
+        "END"
+    )
+    parsed = statements.parse_statements(_proc(body))
+    assert parsed["ok"], parsed
+    kinds = [s["kind"] for s in parsed["statements"]]
+    assert kinds == ["IF"], kinds
+    text = parsed["statements"][0]["text"]
+    assert "ELSE IF @ClientActive = 49" in text
+    assert "INSERT INTO T" in text
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     for t in tests:
