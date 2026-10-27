@@ -7,9 +7,17 @@ except ImportError:
     import blocks, diffing, statements
 
 _AS_SUFFIX = re.compile(r"\bAS\s*$", re.IGNORECASE)
-_PROC_START = re.compile(r"(?is)\b(?:ALTER|CREATE)\s+(?:PROC|PROCEDURE|FUNCTION|VIEW|TRIGGER)\b")
+_MODULE_RE = re.compile(
+    r"(?is)\b(?:CREATE(?:\s+OR\s+ALTER)?|ALTER)\s+(PROC|PROCEDURE|FUNCTION|VIEW|TRIGGER)\b"
+)
+_USE_RE = re.compile(r"(?is)^\s*USE\b")
+_SET_BATCH_RE = re.compile(r"(?is)^\s*SET\s+(?:ANSI_NULLS|QUOTED_IDENTIFIER)\b")
+_GO_LINE_RE = re.compile(r"(?i)^\s*GO\s*$")
+_CLIENT_ACTIVE_RE = re.compile(r"(?i)@ClientActive\b")
+_DECLARE_CLIENT_RE = re.compile(r"(?is)\bDECLARE\b[^;]*?@ClientActive\b")
 _DECLARE_HEAD = re.compile(r"(?is)^\s*DECLARE\s+(@[A-Za-z_]\w*)\b")
 _NAME_USE = re.compile(r"(?i)@[A-Za-z_]\w*")
+_PROBE_HEADER = "CREATE PROCEDURE dbo._trim_probe\n    @ClientActive int\nAS\n"
 
 
 def _paren_split_comma(text: str) -> list[str]:
@@ -92,61 +100,219 @@ def hoist_declares(relevant: list[str], excluded_bodies: list[str]) -> list[str]
     return hoisted
 
 
+def _split_go_batches(definition: str) -> list[tuple[str, int]]:
+    """Split on a GO line whose masked text is only GO. Returns (text, 1-based start line).
+
+    Newlines inside a string are blanked in the mask, so line i of the source
+    is read from the mask at the same character offsets, not by splitting the mask.
+    """
+    masked = statements._mask_literals_and_comments(definition)
+    lines = definition.split("\n")
+    batches: list[tuple[str, int]] = []
+    buf: list[str] = []
+    start_line = 1
+    offset = 0
+    for idx, raw in enumerate(lines, start=1):
+        mask_line = masked[offset:offset + len(raw)]
+        offset += len(raw) + 1
+        if _GO_LINE_RE.match(mask_line):
+            text = "\n".join(buf)
+            if text.strip():
+                batches.append((text, start_line))
+            buf = []
+            start_line = idx + 1
+            continue
+        if not buf:
+            start_line = idx
+        buf.append(raw)
+    text = "\n".join(buf)
+    if text.strip():
+        batches.append((text, start_line))
+    return batches
+
+
+def _module_kind(batch: str) -> str | None:
+    """Procedure, function, view, or trigger, matched only outside strings and comments."""
+    masked = statements._mask_literals_and_comments(batch)
+    match = _MODULE_RE.search(masked)
+    if not match:
+        return None
+    word = match.group(1).upper()
+    if word in ("PROC", "PROCEDURE"):
+        return "procedure"
+    return word.lower()
+
+
+def _masked(text: str) -> str:
+    return statements._mask_literals_and_comments(text or "")
+
+
+def _mentions_client_active(sql: str) -> bool:
+    return bool(_CLIENT_ACTIVE_RE.search(_masked(sql)))
+
+
+def _declares_client_active(sql: str) -> bool:
+    return bool(_DECLARE_CLIENT_RE.search(_masked(sql)))
+
+
+def _has_outer_begin_end(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    masked = _masked(stripped)
+    if re.match(r"(?is)^BEGIN\s+(?:TRAN|TRANSACTION)\b", masked):
+        return False
+    if not re.match(r"(?is)^BEGIN\b", masked):
+        return False
+    return re.search(r"(?is)\bEND\s*$", masked) is not None
+
+
+def _starts_with_return(text: str) -> bool:
+    return bool(re.match(r"(?is)^RETURN\b", _masked((text or "").strip())))
+
+
+def _shift_scope(scope: dict, batch_line: int) -> None:
+    delta = batch_line - 1
+    if delta <= 0:
+        return
+    for pair in scope.get("excluded_ranges") or []:
+        pair[0] += delta
+        pair[1] += delta
+    for block in scope.get("excluded_blocks") or []:
+        for key in ("line", "start_line", "end_line"):
+            if key in block:
+                block[key] += delta
+
+
+def _meta_from(scope: dict) -> dict:
+    stats = scope.get("stats") or {}
+    return {
+        "mode": scope.get("mode"),
+        "client_id": scope.get("client_id"),
+        "stats": stats,
+        "unknown_kept": int(stats.get("unknown_client") or 0) > 0,
+    }
+
+
+def _reassemble_module(batch: str, scope: dict, kind: str | None) -> str:
+    header, body = diffing.split_param_body(batch)
+    excluded = scope.get("excluded_blocks") or []
+    hoisted = hoist_declares(
+        list(scope["relevant_blocks"]),
+        [b.get("body") or "" for b in excluded],
+    )
+    # Nothing was cut from a function, view, or trigger: keep the source text,
+    # including RETURNS TABLE AS RETURN and a leading comment.
+    if kind != "procedure" and not excluded and not hoisted:
+        return batch
+    header = (header or "").rstrip()
+    if header and not _AS_SUFFIX.search(header):
+        header = f"{header}\nAS"
+    inner = "\n".join(hoisted + list(scope["relevant_blocks"])).strip()
+    if kind in ("procedure", "trigger") or _has_outer_begin_end(body or ""):
+        if not _has_outer_begin_end(inner):
+            inner = f"BEGIN\n{inner}\nEND"
+    elif kind == "function" and _starts_with_return(body or "") and not _starts_with_return(inner):
+        inner = f"RETURN\n{inner}" if inner else "RETURN"
+    if not header:
+        return inner
+    return f"{header}\n{inner}"
+
+
+def _emit_loose(scope: dict) -> str:
+    excluded = scope.get("excluded_blocks") or []
+    hoisted = hoist_declares(
+        list(scope["relevant_blocks"]),
+        [b.get("body") or "" for b in excluded],
+    )
+    inner = "\n".join(hoisted + list(scope["relevant_blocks"])).strip()
+    if _mentions_client_active(inner) and not _declares_client_active(inner):
+        inner = f"DECLARE @ClientActive int = {scope.get('client_id')};\n{inner}"
+    return inner
+
+
+def _trim_module(batch: str, client_active_id, batch_line: int) -> dict:
+    scope = blocks.resolve_scope(batch, client_active_id)
+    if not scope.get("ok"):
+        reason = scope.get("reason") or "scope failed"
+        if "invalid client_active_id" in reason:
+            return {"invalid": True, "reason": reason}
+        return {"sql": batch, "reason": reason}
+    _shift_scope(scope, batch_line)
+    return {
+        "sql": _reassemble_module(batch, scope, _module_kind(batch)),
+        "harvest": scope.get("excluded_blocks") or [],
+        "ranges": scope.get("excluded_ranges") or [],
+        "meta": _meta_from(scope),
+    }
+
+
+def _trim_loose(batch: str, client_active_id) -> dict:
+    scope = blocks.resolve_scope(_PROBE_HEADER + batch, client_active_id)
+    if not scope.get("ok"):
+        reason = scope.get("reason") or "scope failed"
+        if "invalid client_active_id" in reason:
+            if _mentions_client_active(batch):
+                return {"invalid": True, "reason": reason}
+            return {"sql": batch}
+        return {"sql": batch, "reason": reason}
+    return {"sql": _emit_loose(scope), "meta": _meta_from(scope)}
+
+
+def _trim_batch(batch: str, client_active_id, batch_line: int) -> dict:
+    if _module_kind(batch):
+        return _trim_module(batch, client_active_id, batch_line)
+    masked = _masked(batch)
+    if _USE_RE.match(masked) or _SET_BATCH_RE.match(masked):
+        return {"sql": batch}
+    return _trim_loose(batch, client_active_id)
+
+
 def trim_procedure(definition: str, client_active_id) -> dict:
     if not (definition or "").strip():
         return {"ok": False, "reason": "empty definition", "trimmed_sql": None, "harvest": [], "excluded_ranges": []}
-    definition = (definition or "").replace("\r\n", "\n")
-    # SSMS "Script as" dumps start with USE/GO/SET. Those are not the procedure,
-    # and leaving them in made a trimmed body look like the original script.
-    start = _PROC_START.search(definition)
-    preamble_lines = 0
-    if start:
-        preamble = definition[:start.start()]
-        preamble_lines = preamble.count("\n")
-        proc_def = definition[start.start():]
-    else:
-        proc_def = definition
-    scope = blocks.resolve_scope(proc_def, client_active_id)
-    harvest = scope.get("excluded_blocks") or []
-    excluded_ranges = scope.get("excluded_ranges") or []
-
-    if preamble_lines > 0:
-        excluded_ranges = [[r[0] + preamble_lines, r[1] + preamble_lines] for r in excluded_ranges]
-        for b in harvest:
-            if "line" in b:
-                b["line"] += preamble_lines
-            if "start_line" in b:
-                b["start_line"] += preamble_lines
-            if "end_line" in b:
-                b["end_line"] += preamble_lines
-
-    if not scope.get("ok"):
+    definition = (definition or "").replace("\r\n", "\n").replace("\r", "\n")
+    batches = _split_go_batches(definition)
+    if not batches:
         return {
-            "ok": False,
-            "reason": scope.get("reason") or "scope failed",
-            "trimmed_sql": None,
-            "harvest": harvest,
-            "excluded_ranges": excluded_ranges,
+            "ok": True,
+            "trimmed_sql": definition,
+            "harvest": [],
+            "excluded_ranges": [],
         }
-    header, _body = diffing.split_param_body(proc_def)
-    header = (header or "").rstrip() or "CREATE PROCEDURE [dbo].[Unknown] AS"
-    if not _AS_SUFFIX.search(header):
-        header = f"{header}\nAS"
-    excluded_bodies = [b.get("body") or "" for b in harvest]
-    hoisted = hoist_declares(list(scope["relevant_blocks"]), excluded_bodies)
-    inner = "\n".join(hoisted + list(scope["relevant_blocks"])).strip()
-    trimmed = f"{header}\nBEGIN\n{inner}\nEND"
-    stats = scope.get("stats") or {}
-    return {
+    parts: list[str] = []
+    harvest: list = []
+    ranges: list = []
+    reason = None
+    meta = None
+    for text, line in batches:
+        outcome = _trim_batch(text, client_active_id, line)
+        if outcome.get("invalid"):
+            return {
+                "ok": False,
+                "reason": outcome.get("reason") or "scope failed",
+                "trimmed_sql": None,
+                "harvest": [],
+                "excluded_ranges": [],
+            }
+        parts.append(outcome.get("sql") or "")
+        harvest.extend(outcome.get("harvest") or [])
+        ranges.extend(outcome.get("ranges") or [])
+        if outcome.get("reason"):
+            reason = reason or outcome["reason"]
+        if outcome.get("meta"):
+            meta = outcome["meta"]
+    result = {
         "ok": True,
-        "mode": scope.get("mode"),
-        "client_id": scope.get("client_id"),
-        "trimmed_sql": trimmed,
+        "trimmed_sql": "\nGO\n".join(parts),
         "harvest": harvest,
-        "excluded_ranges": excluded_ranges,
-        "unknown_kept": int(stats.get("unknown_client") or 0) > 0,
-        "stats": stats,
+        "excluded_ranges": ranges,
     }
+    if reason:
+        result["reason"] = reason
+    if meta:
+        result.update(meta)
+    return result
 
 
 def handle_trim(body: dict) -> tuple[dict, int]:
