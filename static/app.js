@@ -652,16 +652,32 @@ function buildFullUpdatePayload() {
   } else {
     return { error: "Full Update left side is a catalog file or a .bak. This machine does not open server 105." };
   }
+  const allDatabases = !!document.getElementById("fullUpdateAllDbs")?.checked;
   const rightMode = sideMode("client");
-  const right = rightMode === "live" || rightMode === "bak" ? buildSideSpec("client") : null;
-  if (!right) return { error: "Configure the Client connection (live server and database, or a .bak)." };
+  let right = null;
+  if (rightMode === "bak") {
+    right = buildSideSpec("client");
+    if (!right) return { error: "Configure the Client connection (live server and database, or a .bak)." };
+  } else if (rightMode === "live") {
+    const fields = liveConnectFields("client");
+    if (!fields.server) return { error: "Configure the Client connection (live server and database, or a .bak)." };
+    if (!allDatabases && !fields.database) {
+      return { error: "Select the Client database, or check All databases on both sides." };
+    }
+    right = {
+      kind: "live",
+      server: fields.server,
+      port: fields.port,
+      database: fields.database,
+      user: fields.user,
+      password: fields.password,
+    };
+  } else {
+    return { error: "Configure the Client connection (live server and database, or a .bak)." };
+  }
   const server = (right.server || "").trim();
   if (server === "10.0.10.105") return { error: "Full Update cannot open server 105." };
-  const allDatabases = !!document.getElementById("fullUpdateAllDbs")?.checked;
   const database = document.getElementById("db_client")?.value?.trim() || "";
-  if (!allDatabases && right.kind === "live" && !database) {
-    return { error: "Select the Client database, or check All databases on both sides." };
-  }
   return {
     left,
     right,
