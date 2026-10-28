@@ -176,6 +176,9 @@
               <div class="run-actions">
                 <label class="trim-label">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
                 <button id="go">Compare</button>
+                <button type="button" id="fullUpdateBtn">Full Update</button>
+                <button type="button" class="ghost" id="procFilterBtn">Procedures filter</button>
+                <label class="trim-label"><input type="checkbox" id="fullUpdateAllDbs"> All databases on both sides</label>
               </div>
             </div>
 
@@ -185,6 +188,7 @@
                 <div class="side-mode-toggle" role="radiogroup" aria-label="Master source mode">
                   <label><input type="radio" name="sideMode_master" value="live" checked> Live</label>
                   <label><input type="radio" name="sideMode_master" value="bak"> Bak</label>
+                  <label><input type="radio" name="sideMode_master" value="catalog"> Catalog</label>
                 </div>
                 <div class="side-live" id="livePane_master">
                   <input id="liveMasterServer" placeholder="server" class="live-in" autocomplete="off">
@@ -199,6 +203,10 @@
                   <button type="button" class="ghost sm" id="pickBak_master">Choose .bak…</button>
                   <span id="bakPath_master" class="hint"></span>
                   <p id="bakDesktopHint_master" class="hint" hidden>Use the desktop app to pick .bak files.</p>
+                </div>
+                <div class="side-catalog" id="catalogPane_master" hidden>
+                  <input id="catalogPath_master" placeholder="catalog .json path" class="live-in" autocomplete="off">
+                  <p class="hint">Recorded stand-in for server 105. Full Update reads this file or a .bak and does not open that server.</p>
                 </div>
               </div>
 
@@ -224,7 +232,7 @@
                 </div>
               </div>
             </div>
-            <p class="hint">Apply to client uses the Client live connection above (105 is never written).</p>
+            <p class="hint">Apply to client uses the Client live connection above (105 is never written). Full Update writes script files for download and does not run them.</p>
           </div>
         </section>
 
@@ -253,6 +261,15 @@
           <div id="workspaces"></div>
           <div class="downloads" id="downloads"></div>
         </div>
+
+        <section class="block" id="fullUpdateResult" hidden>
+          <div class="block-head">
+            <h2>Full Update files</h2>
+            <span class="hint">Download only. The server does not run these scripts.</span>
+          </div>
+          <div class="downloads full-update-files" id="fullUpdateFiles"></div>
+          <p id="fullUpdateNotes" class="hint"></p>
+        </section>
       </div>
 
       <div id="compareSubDatacopy" class="compare-subpane" data-compare-sub="datacopy" hidden>
@@ -389,6 +406,32 @@
     </div>
     <div class="proc-viewer-body">
       <pre id="procViewerPre" class="proc-viewer-pre"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="procFilterDialog" class="apply-modal" hidden role="dialog" aria-labelledby="procFilterTitle" aria-modal="true">
+  <div class="apply-modal-backdrop" id="procFilterBackdrop"></div>
+  <div class="apply-modal-panel proc-filter-panel">
+    <h2 id="procFilterTitle">Procedures filter</h2>
+    <p class="hint">Both operators exclude. A procedure or function whose name contains a token, or starts with one, is left out of this run. Open this dialog again to see the shipped defaults.</p>
+    <div class="proc-filter-groups">
+      <section class="block">
+        <h3>Contains</h3>
+        <ul id="procFilterContains" class="proc-filter-list"></ul>
+      </section>
+      <section class="block">
+        <h3>Starts with</h3>
+        <ul id="procFilterStarts" class="proc-filter-list"></ul>
+      </section>
+    </div>
+    <div class="proc-filter-add">
+      <input id="procFilterToken" type="text" autocomplete="off" placeholder="Add a token">
+      <button type="button" class="ghost" id="procFilterContainsBtn">Contains</button>
+      <button type="button" class="ghost" id="procFilterStartsBtn">Starts with</button>
+    </div>
+    <div class="apply-modal-actions">
+      <button type="button" class="ghost" id="procFilterCloseBtn">Close</button>
     </div>
   </div>
 </div>

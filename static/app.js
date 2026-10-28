@@ -438,16 +438,20 @@ function liveConnectFields(role) {
   };
 }
 
+function applySideMode(role) {
+  const mode = sideMode(role);
+  const livePane = document.getElementById(`livePane_${role}`);
+  const bakPane = document.getElementById(`bakPane_${role}`);
+  const catalogPane = document.getElementById(`catalogPane_${role}`);
+  if (livePane) livePane.hidden = mode !== "live";
+  if (bakPane) bakPane.hidden = mode !== "bak";
+  if (catalogPane) catalogPane.hidden = mode !== "catalog";
+  updateConnFieldGates();
+}
+
 function wireSideMode(role) {
   document.querySelectorAll(`input[name="sideMode_${role}"]`).forEach(radio => {
-    radio.addEventListener("change", () => {
-      const live = sideMode(role) === "live";
-      const livePane = document.getElementById(`livePane_${role}`);
-      const bakPane = document.getElementById(`bakPane_${role}`);
-      if (livePane) livePane.hidden = !live;
-      if (bakPane) bakPane.hidden = live;
-      updateConnFieldGates();
-    });
+    radio.addEventListener("change", () => applySideMode(role));
   });
 }
 
@@ -519,7 +523,9 @@ async function pickBakFile(role) {
 }
 
 function buildSideSpec(role) {
-  if (sideMode(role) === "bak") {
+  const mode = sideMode(role);
+  if (mode === "catalog") return null;
+  if (mode === "bak") {
     const path = SELECTED_BAK[role];
     return path ? { kind: "bak", path } : null;
   }
@@ -556,6 +562,10 @@ function appendLog(text, isErr) {
 }
 
 goBtn.addEventListener("click", async () => {
+  if (sideMode("master") === "catalog") {
+    alert("Compare uses Live or Bak. A catalog file is only for Full Update.");
+    return;
+  }
   const master_side = buildSideSpec("master");
   const client_side = buildSideSpec("client");
   const directions = [];
@@ -624,6 +634,175 @@ goBtn.addEventListener("click", async () => {
     clearBusy(goBtn);
   });
 });
+
+/* ============================== Full Update ===================================== */
+
+let fullUpdateRules = null;
+
+function buildFullUpdatePayload() {
+  const mode = sideMode("master");
+  let left = null;
+  if (mode === "catalog") {
+    const path = document.getElementById("catalogPath_master")?.value?.trim() || "";
+    if (!path) return { error: "Choose a catalog file for the left side. Full Update does not open server 105." };
+    left = { kind: "catalog", path };
+  } else if (mode === "bak") {
+    left = buildSideSpec("master");
+    if (!left) return { error: "Choose a .bak for the left side. It is restored under a temporary name and dropped after capture." };
+  } else {
+    return { error: "Full Update left side is a catalog file or a .bak. This machine does not open server 105." };
+  }
+  const rightMode = sideMode("client");
+  const right = rightMode === "live" || rightMode === "bak" ? buildSideSpec("client") : null;
+  if (!right) return { error: "Configure the Client connection (live server and database, or a .bak)." };
+  const server = (right.server || "").trim();
+  if (server === "10.0.10.105") return { error: "Full Update cannot open server 105." };
+  const allDatabases = !!document.getElementById("fullUpdateAllDbs")?.checked;
+  const database = document.getElementById("db_client")?.value?.trim() || "";
+  if (!allDatabases && right.kind === "live" && !database) {
+    return { error: "Select the Client database, or check All databases on both sides." };
+  }
+  return {
+    left,
+    right,
+    all_databases: allDatabases,
+    database: allDatabases ? null : (database || null),
+    rules: fullUpdateRules,
+  };
+}
+
+function renderFullUpdateFiles(runId, meta, files) {
+  const box = document.getElementById("fullUpdateResult");
+  const host = document.getElementById("fullUpdateFiles");
+  const notes = document.getElementById("fullUpdateNotes");
+  if (!host) return;
+  const names = Array.isArray(files) ? files : Object.keys(files || {});
+  host.innerHTML = names.map((name) =>
+    `<a href="/api/full_update/${encodeURIComponent(runId)}/${encodeURIComponent(name)}" target="_blank">${escapeHtml(name)}</a>`
+  ).join("");
+  if (notes) {
+    const manifest = (meta && meta.manifest) || {};
+    const appendix = manifest.appendix || [];
+    const warnings = manifest.warnings || [];
+    const bits = [];
+    if (appendix.length) bits.push(appendix.length + " manual item(s) in the appendix");
+    if (warnings.length) bits.push(warnings.length + " warning(s)");
+    notes.textContent = bits.join(" · ");
+  }
+  if (box) box.hidden = false;
+}
+
+function renderProcFilterRows(rules) {
+  const contains = document.getElementById("procFilterContains");
+  const starts = document.getElementById("procFilterStarts");
+  if (!contains || !starts) return;
+  contains.innerHTML = "";
+  starts.innerHTML = "";
+  rules.forEach((rule, index) => {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = rule.value;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost sm";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      fullUpdateRules = rules.filter((_, i) => i !== index);
+      renderProcFilterRows(fullUpdateRules);
+    });
+    li.append(label, remove);
+    const list = rule.op === "starts_with" ? starts : contains;
+    list.appendChild(li);
+  });
+}
+
+async function openProcFilter() {
+  const dialog = document.getElementById("procFilterDialog");
+  if (!dialog) return;
+  dialog.hidden = false;
+  try {
+    const res = await fetch("/api/procedure_filter/defaults");
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || "could not load procedure filter");
+    const rules = Array.isArray(body.rules) ? body.rules : [];
+    fullUpdateRules = rules.map((rule) => ({ op: rule.op, value: rule.value }));
+    renderProcFilterRows(fullUpdateRules);
+  } catch (err) {
+    appendLog("ERROR: " + (err && err.message ? err.message : err), true);
+  }
+}
+
+function addProcFilterRule(op) {
+  if (!Array.isArray(fullUpdateRules)) return;
+  const input = document.getElementById("procFilterToken");
+  const value = (input && input.value ? input.value : "").trim();
+  if (!value) return;
+  fullUpdateRules = fullUpdateRules.concat([{ op: op, value: value }]);
+  if (input) input.value = "";
+  renderProcFilterRows(fullUpdateRules);
+}
+
+document.getElementById("procFilterBtn")?.addEventListener("click", () => { openProcFilter(); });
+document.getElementById("procFilterCloseBtn")?.addEventListener("click", () => {
+  const dialog = document.getElementById("procFilterDialog");
+  if (dialog) dialog.hidden = true;
+});
+document.getElementById("procFilterBackdrop")?.addEventListener("click", () => {
+  const dialog = document.getElementById("procFilterDialog");
+  if (dialog) dialog.hidden = true;
+});
+document.getElementById("procFilterContainsBtn")?.addEventListener("click", () => addProcFilterRule("contains"));
+document.getElementById("procFilterStartsBtn")?.addEventListener("click", () => addProcFilterRule("starts_with"));
+
+const fullUpdateBtn = document.getElementById("fullUpdateBtn");
+fullUpdateBtn.addEventListener("click", async () => {
+  if (fullUpdateBtn.disabled) return;
+  logEl.innerHTML = "";
+  const logSection = document.getElementById("logSection");
+  if (logSection) logSection.style.display = "block";
+  setBusy("Full Update…", fullUpdateBtn);
+  const payload = buildFullUpdatePayload();
+  if (payload.error) {
+    appendLog("ERROR: " + payload.error, true);
+    clearBusy(fullUpdateBtn);
+    return;
+  }
+  let res, body, postError = "";
+  try {
+    res = await fetch("/api/full_update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    body = await res.json();
+    if (!res.ok) postError = (body && body.error) ? body.error : "request failed";
+  } catch (err) {
+    postError = (err && err.message) ? err.message : String(err);
+  }
+  if (!postError) {
+    const es = new EventSource("/api/stream/" + body.job_id);
+    es.addEventListener("log", (e) => {
+      const msg = JSON.parse(e.data);
+      appendLog(msg);
+      setBusyLabel(msg);
+    });
+    es.addEventListener("result", (e) => {
+      const result = JSON.parse(e.data);
+      renderFullUpdateFiles(result.run_id, result.meta, result.files);
+      es.close();
+      clearBusy(fullUpdateBtn);
+    });
+    es.addEventListener("error", (e) => {
+      if (e.data) appendLog("FAILED: " + JSON.parse(e.data), true);
+      es.close();
+      clearBusy(fullUpdateBtn);
+    });
+    return;
+  }
+  appendLog("ERROR: " + postError, true);
+  clearBusy(fullUpdateBtn);
+});
+/* end fullUpdateBtn */
 
 /* ============================== Results / workspace ============================== */
 

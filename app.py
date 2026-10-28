@@ -16,9 +16,10 @@ import pymssql
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from drift import (ai, ai_merge, blocks, classify, compare, config, datacopy, diff_render, diffing,
-                   docker_mgmt, executor, gatewrap, ledger, livescan, metrics, pipeline, profiles,
-                   proc_lens, scriptgen, statements, webdeploy)
+                   docker_mgmt, executor, full_update, gatewrap, ledger, livescan, metrics, pipeline,
+                   profiles, proc_lens, restore, scriptgen, statements, webdeploy)
 from drift.apply_session import ApplySession, Decision
+from drift.proc_filter import default_rules
 from drift.trimmer import handle_trim
 
 app = Flask(__name__)
@@ -492,6 +493,364 @@ def _start_compare_job(compare_callable):
     return job_id
 
 
+# Full Update never dials server 105. Left is a catalog file or a .bak restored
+# as drift_left_<id>. Generated SQL is written and not executed.
+_BLOCKED_SERVERS = {"10.0.10.105"}
+_REFUSED_DROP = frozenset({
+    "olives_bo", "olives_peek", "olives_pos", "osfa_db", "osfa_peek",
+})
+
+
+def _server_blocked(server: str) -> bool:
+    return (server or "").strip().lower() in _BLOCKED_SERVERS
+
+
+def _unsafe_sql_name(name: str) -> bool:
+    if not isinstance(name, str) or not name or name in {".", ".."}:
+        return True
+    if ".." in name or "/" in name or "\\" in name:
+        return True
+    return Path(name).name != name
+
+
+def _safe_scratch_name(name: str) -> bool:
+    if not name.startswith("drift_") or len(name) <= len("drift_"):
+        return False
+    return all(ch.isalnum() or ch == "_" for ch in name[len("drift_"):])
+
+
+def _strip_passwords(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_passwords(item)
+            for key, item in value.items()
+            if str(key).casefold() != "password"
+        }
+    if isinstance(value, list):
+        return [_strip_passwords(item) for item in value]
+    return value
+
+
+def _public_side(side: dict) -> dict:
+    kind = side.get("kind")
+    if kind in {"catalog", "bak"}:
+        return {"kind": kind, "path": str(side.get("path") or "")}
+    redacted = _redact_side(dict(side)) or {}
+    redacted["kind"] = kind
+    return redacted
+
+
+def connect_database(base_side: dict, database_name: str):
+    """One connection for one database. The slot dict is not reused."""
+    side = dict(base_side)
+    side["database"] = database_name
+    return _sql_connect(side)
+
+
+def drop_database(name: str, log) -> None:
+    """Drop a scratch restore only. Never Olives_BO, Olives_POS, or OSFA_DB."""
+    folded = (name or "").strip().casefold()
+    if folded in _REFUSED_DROP or not _safe_scratch_name(name):
+        raise RuntimeError(f"refuse to drop database {name}")
+    log(f"DROP DATABASE [{name}]")
+    restore.drop_database(name, log)
+
+
+def _scratch_server_side() -> dict:
+    kw = config.scratch_connect_kwargs()
+    side = {
+        "server": kw.get("server") or "127.0.0.1",
+        "database": "master",
+        "user": kw.get("user") or "",
+        "password": kw.get("password") or "",
+    }
+    if kw.get("port"):
+        side["port"] = kw["port"]
+    return side
+
+
+def load_bak_catalog(bak_path, physical_name, server_side, log):
+    """Restore as ``physical_name``, capture it, drop it. The catalog key is the header name."""
+    header = restore.restore_backup(bak_path, physical_name, log)
+    try:
+        logical = full_update.catalog_key_for_restore(header, physical_name)
+        captured = full_update.capture_live_catalog(
+            lambda name: connect_database(server_side, name),
+            physical_name,
+        )
+        return logical, captured
+    finally:
+        drop_database(physical_name, log)
+
+
+def _catalog_database_body(captured: dict, read_name: str) -> dict:
+    if not isinstance(captured, dict):
+        return {"objects": {}, "dependencies": []}
+    databases = captured.get("databases")
+    if isinstance(databases, dict) and databases:
+        if read_name in databases:
+            return databases[read_name]
+        folded = read_name.casefold()
+        for key, body in databases.items():
+            if str(key).casefold() == folded:
+                return body
+        return next(iter(databases.values()))
+    if "objects" in captured or "dependencies" in captured:
+        return {
+            "objects": captured.get("objects") or {},
+            "dependencies": captured.get("dependencies") or [],
+        }
+    return {"objects": {}, "dependencies": []}
+
+
+def _catalog_from_bak(bak_path, physical_name, log, label: str) -> dict:
+    logical, captured = load_bak_catalog(
+        bak_path, physical_name, _scratch_server_side(), log,
+    )
+    return {
+        "server_label": label,
+        "databases": {logical: _catalog_database_body(captured, physical_name)},
+    }
+
+
+def _load_static_catalog(side: dict, label: str, log, physical_name: str) -> dict:
+    kind = side.get("kind")
+    if kind == "catalog":
+        path = Path(str(side.get("path") or ""))
+        log(f"reading {label} catalog {path.name}")
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    if kind == "bak":
+        log(f"restoring {label} backup as [{physical_name}]")
+        return _catalog_from_bak(side.get("path"), physical_name, log, label)
+    if kind == "live":
+        return {"server_label": label, "databases": {}}
+    raise ValueError(f"{label}: kind must be catalog, bak, or live")
+
+
+def _user_database_names(side: dict) -> list[str]:
+    """User databases (database_id > 4) via one connection to master."""
+    conn = connect_database(side, "master")
+    if conn is None:
+        raise RuntimeError("could not connect to list databases")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name")
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _pair_intersection(left_names: list[str], right_names: list[str]) -> tuple[list[str], list[str]]:
+    right_by: dict[str, str] = {}
+    for name in right_names:
+        right_by.setdefault(name.casefold(), name)
+    left_keep: list[str] = []
+    right_keep: list[str] = []
+    seen: set[str] = set()
+    for name in left_names:
+        fold = name.casefold()
+        if fold in seen or fold not in right_by:
+            continue
+        seen.add(fold)
+        left_keep.append(name)
+        right_keep.append(right_by[fold])
+    return left_keep, right_keep
+
+
+def _read_live_databases(side: dict, names: list[str], log, label: str) -> dict:
+    """``capture_live_catalog`` once per database name, each on its own connection."""
+    catalog = {"server_label": label, "databases": {}}
+    seen: set[str] = set()
+    for name in names:
+        fold = name.casefold()
+        if fold in seen:
+            continue
+        seen.add(fold)
+        log(f"reading {label} database [{name}]")
+        captured = full_update.capture_live_catalog(
+            lambda database_name, base=side: connect_database(base, database_name),
+            name,
+        )
+        catalog["databases"][name] = _catalog_database_body(captured, name)
+    return catalog
+
+
+def _empty_database_names(names: list[str], already: dict) -> dict:
+    have = {key.casefold() for key in already}
+    extra = {}
+    for name in names:
+        if name.casefold() in have:
+            continue
+        extra[name] = {"objects": {}, "dependencies": []}
+        have.add(name.casefold())
+    return extra
+
+
+def _fill_live_catalog(side: dict, names: list[str], manifest_names: list[str], log, label: str) -> dict:
+    if _server_blocked(side.get("server") or ""):
+        raise ValueError(f"{label}: this machine cannot open 10.0.10.105")
+    read = _read_live_databases(side, names, log, label)
+    databases = dict(read["databases"])
+    databases.update(_empty_database_names(manifest_names, databases))
+    return {"server_label": label, "databases": databases}
+
+
+def _scope_names(database: str | None, requested) -> list[str]:
+    if requested and not database:
+        return [str(name) for name in requested if str(name).strip()]
+    if database:
+        return [database]
+    return []
+
+
+def _limit_catalog(catalog: dict, names: list) -> dict:
+    wanted = {str(name).casefold() for name in names}
+    databases = catalog.get("databases") or {}
+    kept = {key: body for key, body in databases.items() if str(key).casefold() in wanted}
+    return {**catalog, "databases": kept}
+
+
+def _validate_full_update(body: dict) -> None:
+    left = body.get("left")
+    right = body.get("right")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        raise ValueError("left and right are required")
+    for label, side in (("left", left), ("right", right)):
+        kind = side.get("kind")
+        if kind not in {"catalog", "bak", "live"}:
+            raise ValueError(f"{label}: kind must be catalog, bak, or live")
+        if kind in {"catalog", "bak"}:
+            path = side.get("path")
+            if not path or not Path(str(path)).is_file():
+                raise ValueError(f"{label} path not found: {path}")
+        else:
+            server = (side.get("server") or "").strip()
+            if not server:
+                raise ValueError(f"{label}: live side needs a server")
+            if _server_blocked(server):
+                raise ValueError(f"{label}: this machine cannot open {server}")
+    database = body.get("database")
+    database = database.strip() if isinstance(database, str) else ""
+    requested = body.get("databases")
+    if requested is not None and not isinstance(requested, list):
+        raise ValueError("databases must be a list")
+    if not bool(body.get("all_databases")) and not database and not requested:
+        raise ValueError("database required unless all databases is selected")
+    rules = body.get("rules", None)
+    if rules is not None and not isinstance(rules, list):
+        raise ValueError("rules must be a list")
+
+
+def _run_full_update(body: dict, log) -> dict:
+    run_id = uuid.uuid4().hex[:12]
+    run_dir = config.OUTPUT_DIR / run_id
+    rules = body.get("rules", None)
+    all_databases = bool(body.get("all_databases"))
+    raw_database = body.get("database")
+    database = raw_database.strip() if isinstance(raw_database, str) and raw_database.strip() else None
+    requested = body.get("databases") if isinstance(body.get("databases"), list) else None
+    left_side = body.get("left") or {}
+    right_side = body.get("right") or {}
+
+    left_catalog = _load_static_catalog(left_side, "left", log, f"drift_left_{run_id}")
+    right_catalog = _load_static_catalog(right_side, "right", log, f"drift_right_{run_id}")
+
+    if left_side.get("kind") == "live" or right_side.get("kind") == "live":
+        if all_databases:
+            left_pool = (
+                _user_database_names(left_side)
+                if left_side.get("kind") == "live"
+                else list((left_catalog.get("databases") or {}))
+            )
+            right_pool = (
+                _user_database_names(right_side)
+                if right_side.get("kind") == "live"
+                else list((right_catalog.get("databases") or {}))
+            )
+            left_keep, right_keep = _pair_intersection(left_pool, right_pool)
+            left_keep_fold = {name.casefold() for name in left_keep}
+            right_keep_fold = {name.casefold() for name in right_keep}
+            left_only = [name for name in left_pool if name.casefold() not in left_keep_fold]
+            right_only = [name for name in right_pool if name.casefold() not in right_keep_fold]
+            if left_side.get("kind") == "live":
+                left_catalog = _fill_live_catalog(left_side, left_keep, left_only, log, "left")
+            if right_side.get("kind") == "live":
+                right_catalog = _fill_live_catalog(right_side, right_keep, right_only, log, "right")
+        else:
+            scope = _scope_names(database, requested)
+            if left_side.get("kind") == "live":
+                left_catalog = _fill_live_catalog(left_side, scope, [], log, "left")
+            if right_side.get("kind") == "live":
+                right_catalog = _fill_live_catalog(right_side, scope, [], log, "right")
+
+    if all_databases:
+        rendered = full_update.render_full_update(
+            left_catalog, right_catalog, rules, all_databases=True,
+        )
+    elif database and not requested:
+        rendered = full_update.render_full_update(
+            left_catalog, right_catalog, rules, database=database,
+        )
+    elif requested:
+        rendered = full_update.render_full_update(
+            _limit_catalog(left_catalog, requested),
+            _limit_catalog(right_catalog, requested),
+            rules,
+        )
+    else:
+        rendered = full_update.render_full_update(
+            left_catalog, right_catalog, rules, database=database,
+        )
+
+    for filename, text in rendered["files"].items():
+        if _unsafe_sql_name(filename):
+            raise ValueError(f"refusing file name {filename}")
+        full_update.write_sql_file(run_dir / "full_update" / filename, text)
+    log("wrote Full Update files; they were not executed")
+
+    meta = _strip_passwords({
+        "kind": "full_update",
+        "all_databases": all_databases,
+        "database": None if all_databases else database,
+        "left": _public_side(left_side),
+        "right": _public_side(right_side),
+        "manifest": rendered["manifest"],
+    })
+    _persist_redacted_meta(run_dir, meta)
+    return {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "meta": meta,
+        "files": list(rendered["files"].keys()),
+    }
+
+
+def _start_full_update_job(body: dict) -> str:
+    """Same queue shape as compare. Kind is full_update. No workspaces."""
+    job_id = uuid.uuid4().hex[:12]
+    q: queue.Queue = queue.Queue()
+    JOBS[job_id] = {
+        "queue": q, "result": None, "error": None, "done": False, "kind": "full_update",
+    }
+
+    def log(msg: str):
+        print(f"[{job_id}] {msg}", flush=True)
+        q.put(msg)
+
+    def worker():
+        try:
+            JOBS[job_id]["result"] = _run_full_update(body, log)
+        except Exception as e:  # noqa: BLE001 - surface every failure to the GUI
+            JOBS[job_id]["error"] = str(e)
+            log(f"FAILED: {e}")
+        finally:
+            JOBS[job_id]["done"] = True
+            q.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
 _BACKFILL_RERUN_MSG = (
     "this run was reloaded from a prior session and no longer has the full "
     "in-memory record apply-script assembly needs -- re-run the comparison "
@@ -680,6 +1039,40 @@ def api_compare():
     return jsonify({"job_id": job_id})
 
 
+@app.get("/api/procedure_filter/defaults")
+def api_procedure_filter_defaults():
+    """Dialog rows. The browser does not keep a second copy of the tokens."""
+    return jsonify({"rules": default_rules()})
+
+
+@app.post("/api/full_update")
+def api_full_update():
+    """Write Full Update files. Does not call _start_compare_job and does not execute SQL."""
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        _validate_full_update(body)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"job_id": _start_full_update_job(body)})
+
+
+@app.get("/api/full_update/<run_id>/<filename>")
+def api_full_update_file(run_id, filename):
+    """One file from work/output/<run_id>/full_update/. Rejects .. and separators."""
+    if _unsafe_sql_name(run_id) or _unsafe_sql_name(filename):
+        return jsonify({"error": "invalid file name"}), 400
+    root = (config.OUTPUT_DIR / run_id / "full_update").resolve()
+    target = (root / filename).resolve()
+    if target.parent != root:
+        return jsonify({"error": "invalid file name"}), 400
+    if not target.is_file():
+        return jsonify({"error": "not found"}), 404
+    payload = target.read_bytes()
+    response = Response(payload, mimetype="text/plain")
+    response.headers.set("Content-Disposition", "attachment", filename=filename)
+    return response
+
+
 @app.get("/api/profiles")
 def api_list_profiles():
     """PLAN-V5 Lane D / C5: saved compare profiles. Pure disk read; {} when
@@ -776,6 +1169,13 @@ def api_stream(job_id):
             yield f"event: error\ndata: {json.dumps(job['error'])}\n\n"
         elif job.get("kind") == "ai_batch":
             yield f"event: result\ndata: {json.dumps(job['result'])}\n\n"
+        elif job.get("kind") == "full_update":
+            payload = {
+                "run_id": job["result"]["run_id"],
+                "meta": job["result"]["meta"],
+                "files": job["result"]["files"],
+            }
+            yield f"event: result\ndata: {json.dumps(payload)}\n\n"
         else:
             # don't ship _findings (full definitions, can be MBs) over the wire --
             # the browser only needs run_id + per-workspace index/counts to render.
