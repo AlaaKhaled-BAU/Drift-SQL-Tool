@@ -499,6 +499,14 @@ _BLOCKED_SERVERS = {"10.0.10.105"}
 _REFUSED_DROP = frozenset({
     "olives_bo", "olives_peek", "olives_pos", "osfa_db", "osfa_peek",
 })
+# The tool iterates only these four names. Match is case-insensitive.
+# olives_log is the database the operator named (typed "olives)log").
+_LOOP_DATABASES = frozenset({
+    "olives_bo",
+    "osfa_db",
+    "olives_log",
+    "olives_images",
+})
 
 
 def _server_blocked(server: str) -> bool:
@@ -627,15 +635,24 @@ def _load_static_catalog(side: dict, label: str, log, physical_name: str) -> dic
     raise ValueError(f"{label}: kind must be catalog, bak, or live")
 
 
+def _in_loop(name: str) -> bool:
+    return (name or "").strip().casefold() in _LOOP_DATABASES
+
+
+def _loop_databases(names: list[str]) -> list[str]:
+    """Keep olives_bo, osfa_db, olives_log, and olives_images, in the given order."""
+    return [name for name in names if _in_loop(name)]
+
+
 def _user_database_names(side: dict) -> list[str]:
-    """User databases (database_id > 4) via one connection to master."""
+    """The four loop databases that exist on this server, via one connection to master."""
     conn = connect_database(side, "master")
     if conn is None:
         raise RuntimeError("could not connect to list databases")
     try:
         cur = conn.cursor()
         cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name")
-        return [row[0] for row in cur.fetchall()]
+        return _loop_databases([row[0] for row in cur.fetchall()])
     finally:
         conn.close()
 
@@ -757,12 +774,12 @@ def _run_full_update(body: dict, log) -> dict:
 
     if left_side.get("kind") == "live" or right_side.get("kind") == "live":
         if all_databases:
-            left_pool = (
+            left_pool = _loop_databases(
                 _user_database_names(left_side)
                 if left_side.get("kind") == "live"
                 else list((left_catalog.get("databases") or {}))
             )
-            right_pool = (
+            right_pool = _loop_databases(
                 _user_database_names(right_side)
                 if right_side.get("kind") == "live"
                 else list((right_catalog.get("databases") or {}))
@@ -784,8 +801,12 @@ def _run_full_update(body: dict, log) -> dict:
                 right_catalog = _fill_live_catalog(right_side, scope, [], log, "right")
 
     if all_databases:
+        allowed = list(_LOOP_DATABASES)
         rendered = full_update.render_full_update(
-            left_catalog, right_catalog, rules, all_databases=True,
+            _limit_catalog(left_catalog, allowed),
+            _limit_catalog(right_catalog, allowed),
+            rules,
+            all_databases=True,
         )
     elif database and not requested:
         rendered = full_update.render_full_update(
@@ -948,7 +969,7 @@ def api_live_databases():
     try:
         cur = conn.cursor()
         cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name")
-        names = [row[0] for row in cur.fetchall()]
+        names = _loop_databases([row[0] for row in cur.fetchall()])
     finally:
         conn.close()
     return jsonify({"ok": True, "databases": names})

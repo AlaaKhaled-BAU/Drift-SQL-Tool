@@ -662,7 +662,7 @@ function buildFullUpdatePayload() {
     const fields = liveConnectFields("client");
     if (!fields.server) return { error: "Configure the Client connection (live server and database, or a .bak)." };
     if (!allDatabases && !fields.database) {
-      return { error: "Select the Client database, or check All databases on both sides." };
+      return { error: "Select the Client database, or check Olives_BO, OSFA_DB, Olives_Log, and Olives_Images." };
     }
     right = {
       kind: "live",

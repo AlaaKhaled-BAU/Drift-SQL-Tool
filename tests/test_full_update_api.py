@@ -1,6 +1,8 @@
 """Full Update HTTP API and the SQL Compare button contract. No live SQL."""
+import json
 import pathlib
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -223,7 +225,8 @@ class FullUpdateApiTests(unittest.TestCase):
     def test_all_databases_defaults_off(self):
         html = pathlib.Path("templates/index.html").read_text()
         self.assertIn('id="fullUpdateAllDbs"', html)
-        self.assertIn("All databases on both sides", html)
+        self.assertIn("Olives_BO, OSFA_DB, Olives_Log, and Olives_Images", html)
+        self.assertNotIn("All databases on both sides", html)
         start = html.index('id="fullUpdateAllDbs"')
         tag = html[html.rfind("<", 0, start):html.index(">", start) + 1]
         self.assertNotIn("checked", tag)
@@ -240,6 +243,37 @@ class FullUpdateApiTests(unittest.TestCase):
         self.assertIn("Zed_schema.sql", names)
         self.assertNotIn("Aaa_schema.sql", names)
         self.assertFalse(job["result"]["meta"].get("all_databases"))
+
+    def test_all_databases_loops_only_the_four(self):
+        body = {
+            "server_label": "fixture",
+            "databases": {
+                name: {"objects": {}, "dependencies": []}
+                for name in (
+                    "Olives_BO", "OSFA_DB", "Olives_Log", "Olives_Images",
+                    "Olives_POS", "Aaa", "olives_PEEK",
+                )
+            },
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "catalog.json"
+            path.write_text(json.dumps(body), encoding="utf-8")
+            res = self.client.post("/api/full_update", json={
+                "left": {"kind": "catalog", "path": str(path)},
+                "right": {"kind": "catalog", "path": str(path)},
+                "all_databases": True,
+            })
+            self.assertEqual(res.status_code, 200)
+            job = _wait_job(res.get_json()["job_id"])
+        self.assertIsNone(job.get("error"))
+        names = set(job["result"]["files"])
+        self.assertEqual(names, {
+            "Olives_BO_schema.sql", "Olives_BO_udtt.sql",
+            "OSFA_DB_schema.sql", "OSFA_DB_udtt.sql",
+            "Olives_Log_schema.sql", "Olives_Log_udtt.sql",
+            "Olives_Images_schema.sql", "Olives_Images_udtt.sql",
+            "unified_full_update.sql",
+        })
 
     def test_blocked_server_is_400(self):
         res = self.client.post("/api/full_update", json={

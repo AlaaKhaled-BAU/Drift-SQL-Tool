@@ -23,7 +23,15 @@ class TestLiveDatabases(unittest.TestCase):
     def test_databases_lists_user_dbs(self):
         mock_conn = MagicMock()
         mock_cur = MagicMock()
-        mock_cur.fetchall.return_value = [("Olives_BO",), ("OtherDb",)]
+        mock_cur.fetchall.return_value = [
+            ("Olives_BO",),
+            ("Olives_POS",),
+            ("OSFA_DB",),
+            ("olives_PEEK",),
+            ("Olives_Log",),
+            ("OtherDb",),
+            ("Olives_Images",),
+        ]
         mock_conn.cursor.return_value = mock_cur
         mock_conn.close = MagicMock()
 
@@ -40,7 +48,10 @@ class TestLiveDatabases(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.get_json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["databases"], ["Olives_BO", "OtherDb"])
+        self.assertEqual(
+            body["databases"],
+            ["Olives_BO", "OSFA_DB", "Olives_Log", "Olives_Images"],
+        )
         mock_cur.execute.assert_called_once()
         sql = mock_cur.execute.call_args[0][0]
         self.assertIn("sys.databases", sql)

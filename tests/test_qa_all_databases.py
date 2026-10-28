@@ -18,12 +18,14 @@ class AllDatabasesPayloadTests(unittest.TestCase):
         self.assertLess(fn.index("const allDatabases"), fn.index("liveConnectFields"))
         self.assertIn("!allDatabases && !fields.database", fn)
         self.assertIn(
-            "Select the Client database, or check All databases on both sides.",
+            "Select the Client database, or check Olives_BO, OSFA_DB, Olives_Log, and Olives_Images.",
             fn,
         )
         # An empty live database is refused only when the checkbox is off.
         guard = fn.index("!allDatabases && !fields.database")
-        message = fn.index("Select the Client database, or check All databases on both sides.")
+        message = fn.index(
+            "Select the Client database, or check Olives_BO, OSFA_DB, Olives_Log, and Olives_Images."
+        )
         self.assertLess(guard, message)
 
 
