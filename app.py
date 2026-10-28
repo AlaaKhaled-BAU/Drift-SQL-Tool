@@ -571,7 +571,7 @@ def _scratch_server_side() -> dict:
 
 def load_bak_catalog(bak_path, physical_name, server_side, log):
     """Restore as ``physical_name``, capture it, drop it. The catalog key is the header name."""
-    header = restore.restore_backup(bak_path, physical_name, log)
+    header = restore.restore_backup(Path(bak_path), physical_name, log)
     try:
         logical = full_update.catalog_key_for_restore(header, physical_name)
         captured = full_update.capture_live_catalog(
