@@ -700,7 +700,11 @@ function renderFullUpdateFiles(runId, meta, files) {
     const manifest = (meta && meta.manifest) || {};
     const appendix = manifest.appendix || [];
     const warnings = manifest.warnings || [];
+    const onlyLeft = manifest.databases_only_on_left || [];
+    const onlyRight = manifest.databases_only_on_right || [];
     const bits = [];
+    if (onlyLeft.length) bits.push("Only on the left: " + onlyLeft.join(", "));
+    if (onlyRight.length) bits.push("Only on the right: " + onlyRight.join(", "));
     if (appendix.length) bits.push(appendix.length + " manual item(s) in the appendix");
     if (warnings.length) bits.push(warnings.length + " warning(s)");
     notes.textContent = bits.join(" · ");
