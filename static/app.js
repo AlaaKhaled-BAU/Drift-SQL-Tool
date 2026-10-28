@@ -687,6 +687,15 @@ function buildFullUpdatePayload() {
   };
 }
 
+function clearFullUpdateFiles() {
+  const host = document.getElementById("fullUpdateFiles");
+  const notes = document.getElementById("fullUpdateNotes");
+  const box = document.getElementById("fullUpdateResult");
+  if (host) host.innerHTML = "";
+  if (notes) notes.textContent = "";
+  if (box) box.hidden = true;
+}
+
 function renderFullUpdateFiles(runId, meta, files) {
   const box = document.getElementById("fullUpdateResult");
   const host = document.getElementById("fullUpdateFiles");
@@ -784,6 +793,7 @@ fullUpdateBtn.addEventListener("click", async () => {
   const payload = buildFullUpdatePayload();
   if (payload.error) {
     appendLog("ERROR: " + payload.error, true);
+    clearFullUpdateFiles();
     clearBusy(fullUpdateBtn);
     return;
   }
@@ -813,13 +823,18 @@ fullUpdateBtn.addEventListener("click", async () => {
       clearBusy(fullUpdateBtn);
     });
     es.addEventListener("error", (e) => {
-      if (e.data) appendLog("FAILED: " + JSON.parse(e.data), true);
+      if (e.data) {
+        const msg = JSON.parse(e.data);
+        if (!(logEl.textContent || "").includes(msg)) appendLog("FAILED: " + msg, true);
+        clearFullUpdateFiles();
+      }
       es.close();
       clearBusy(fullUpdateBtn);
     });
     return;
   }
   appendLog("ERROR: " + postError, true);
+  clearFullUpdateFiles();
   clearBusy(fullUpdateBtn);
 });
 /* end fullUpdateBtn */
