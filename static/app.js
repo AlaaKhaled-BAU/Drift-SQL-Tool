@@ -776,6 +776,12 @@ document.getElementById("procFilterCloseBtn")?.addEventListener("click", () => {
   const dialog = document.getElementById("procFilterDialog");
   if (dialog) dialog.hidden = true;
 });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const dialog = document.getElementById("procFilterDialog");
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+});
 document.getElementById("procFilterBackdrop")?.addEventListener("click", () => {
   const dialog = document.getElementById("procFilterDialog");
   if (dialog) dialog.hidden = true;
