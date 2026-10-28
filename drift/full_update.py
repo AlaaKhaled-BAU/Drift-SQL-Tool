@@ -25,13 +25,17 @@ Phase order inside one database:
   referencers, ``DROP TYPE`` inside ``TYPE_ID``, ``CREATE TYPE`` with at most
   one PRIMARY KEY, then ``CREATE OR ALTER`` of every module this file just
   dropped. An excluded or schema-bound referencer skips that type. Never
-  DROP an excluded name.
+  DROP an excluded name. A PRIMARY KEY column is declared NOT NULL. A
+  catalog row that marks that column nullable still creates the type and
+  adds a manifest warning.
 - phase C  sequences: CREATE if missing; a difference is manual.
 - phase D  scalar types: CREATE if missing; a change is manual.
 - phase E  CREATE TABLE if missing (identity on a new table). ALTER TABLE
   ADD for a nullable column, or one NOT NULL ADD that includes DEFAULT.
-  NOT NULL without a default, and identity or computed adds on an existing
-  table, are manual.
+  A column of a PRIMARY KEY or UNIQUE constraint is declared NOT NULL in
+  that CREATE TABLE or ADD. A nullable catalog row for that column is a
+  manifest warning, not a skip. NOT NULL without a default, and identity
+  or computed adds on an existing table, are manual.
 - phase F  functions and views, one ``order_names`` call. A view is emitted
   when a referenced table gains a column, including an unchanged ``SELECT *``.
   Schema qualification comes from the catalog. Skip modules already emitted
@@ -485,12 +489,16 @@ def render_add_primary_key(schema, table, constraint, columns, clustered: bool) 
 
 
 def render_table_type(schema: str, name: str, columns: list[dict], memory_optimized: bool) -> str:
-    """``CREATE TYPE`` with at most one PRIMARY KEY covering every key column."""
+    """``CREATE TYPE`` with at most one PRIMARY KEY covering every key column.
+
+    Each key column is ``NOT NULL`` in this batch. Callers record a manifest
+    warning when the catalog row for that column is nullable.
+    """
     lines = []
     keys = []
     for col in columns or []:
         rendered = _type_text(col)
-        nullability = "NULL" if _nullable(col) else "NOT NULL"
+        nullability = _nullability_sql(col, _key_ordinal(col) is not None)
         lines.append(f"    {_br(col['name'])} {rendered} {nullability}")
         ordinal = _key_ordinal(col)
         if ordinal is not None:
@@ -655,7 +663,9 @@ def _script_database(db: dict, rules, present_databases) -> dict:
     excluded = _excluded_names(pairs, rules)
     by_fold = {_fold(key): (key, left, right) for key, left, right in pairs}
 
-    creates, adds, table_notes, changed, present_cols = _plan_tables(pairs, name, appendix)
+    creates, adds, table_notes, changed, present_cols = _plan_tables(
+        pairs, name, appendix, warnings,
+    )
     phase_b, recreated, created_types = _plan_types(pairs, deps, rules, by_fold, appendix, warnings)
     view_sql, proc_sql, trigger_sql, emitted = _plan_modules(
         pairs, deps, rules, name, present_databases, changed, recreated, appendix, warnings,
@@ -708,7 +718,7 @@ def phase_b_schemas(phase_b: str, schemas: list[str]) -> str:
     return "".join(needed)
 
 
-def _plan_tables(pairs, database, appendix):
+def _plan_tables(pairs, database, appendix, warnings):
     creates = []
     adds = []
     changed = set()
@@ -719,15 +729,20 @@ def _plan_tables(pairs, database, appendix):
             continue
         schema, table = _ident(key, left)
         fold = key.casefold()
+        key_folds = _key_column_folds(left)
+        columns = left.get("columns") or []
         if right is None:
-            creates.append(_batch(_create_table_sql(schema, table, left.get("columns") or [])))
+            for col in columns:
+                if _column_in_key(col, key_folds):
+                    _warn_nullable_key(warnings, schema, table, col)
+            creates.append(_batch(_create_table_sql(schema, table, columns, key_folds)))
             changed.add(fold)
-            present_cols[fold] = {_fold(col.get("name")) for col in (left.get("columns") or [])}
+            present_cols[fold] = {_fold(col.get("name")) for col in columns}
             _note_schema_object(notes, schema)
             continue
         right_cols = {_fold(col.get("name")): col for col in (right.get("columns") or [])}
         have = set(right_cols)
-        for col in left.get("columns") or []:
+        for col in columns:
             col_fold = _fold(col.get("name"))
             if col_fold in right_cols:
                 if _column_signature(col) != _column_signature(right_cols[col_fold]):
@@ -760,7 +775,10 @@ def _plan_tables(pairs, database, appendix):
                     "NOT NULL without a default",
                 )
                 continue
-            adds.append(_batch(_add_column_sql(schema, table, col)))
+            is_key = _column_in_key(col, key_folds)
+            if is_key:
+                _warn_nullable_key(warnings, schema, table, col)
+            adds.append(_batch(_add_column_sql(schema, table, col, is_key)))
             have.add(col_fold)
             changed.add(fold)
             _note_schema_object(notes, schema)
@@ -824,6 +842,9 @@ def _plan_types(pairs, deps, rules, by_fold, appendix, warnings):
             f"IF TYPE_ID(N'{_br(schema)}.{_br(name)}') IS NOT NULL "
             f"DROP TYPE {_br(schema)}.{_br(name)}"
         ))
+        for col in left.get("columns") or []:
+            if _key_ordinal(col) is not None:
+                _warn_nullable_key(warnings, schema, name, col)
         chunks.append(_batch(left_sql))
         for ref_key in ordered:
             ref_left = chosen[ref_key.casefold()]
@@ -1339,18 +1360,20 @@ def _emit_module(definition: str, settings: dict | None) -> str:
     return _as_create_or_alter(text, settings)
 
 
-def _create_table_sql(schema, table, columns) -> str:
-    body = ",\n".join("    " + _column_ddl(col, table) for col in columns)
+def _create_table_sql(schema, table, columns, key_folds=None) -> str:
+    body = ",\n".join(
+        "    " + _column_ddl(col, table, key_folds) for col in columns
+    )
     return (
         f"IF OBJECT_ID(N'{_br(schema)}.{_br(table)}', N'U') IS NULL\n"
         f"CREATE TABLE {_br(schema)}.{_br(table)} (\n{body}\n)"
     )
 
 
-def _add_column_sql(schema, table, col) -> str:
+def _add_column_sql(schema, table, col, key: bool = False) -> str:
     rendered = _type_text(col)
     expr = _default_expr(col)
-    nullability = "NULL" if _nullable(col) else "NOT NULL"
+    nullability = _nullability_sql(col, key)
     extra = ""
     if expr:
         extra = f" CONSTRAINT {_br('DF_' + table + '_' + col['name'])} DEFAULT {expr}"
@@ -1360,7 +1383,7 @@ def _add_column_sql(schema, table, col) -> str:
     )
 
 
-def _column_ddl(col, table) -> str:
+def _column_ddl(col, table, key_folds=None) -> str:
     if col.get("computed"):
         expr = str(col["computed"]).strip()
         if not expr.startswith("("):
@@ -1372,7 +1395,7 @@ def _column_ddl(col, table) -> str:
         seed = _num(col["identity"].get("seed", 1))
         increment = _num(col["identity"].get("increment", 1))
         identity = f" IDENTITY({seed},{increment})"
-    nullability = "NULL" if _nullable(col) else "NOT NULL"
+    nullability = _nullability_sql(col, _column_in_key(col, key_folds))
     extra = ""
     expr = _default_expr(col)
     if expr:
@@ -1460,6 +1483,38 @@ def _nullable(col) -> bool:
     if "is_nullable" in col:
         return bool(col["is_nullable"])
     return True
+
+
+def _nullability_sql(col, key: bool) -> str:
+    """Key columns are NOT NULL. SQL Server rejects a primary key on NULL."""
+    if key or not _nullable(col):
+        return "NOT NULL"
+    return "NULL"
+
+
+def _key_column_folds(obj) -> set[str]:
+    folds = set()
+    for idx in (obj or {}).get("indexes") or []:
+        if not (idx.get("is_primary_key") or idx.get("is_unique_constraint")):
+            continue
+        for column in idx.get("columns") or []:
+            folds.add(_fold(column))
+    return folds
+
+
+def _column_in_key(col, key_folds) -> bool:
+    if _key_ordinal(col) is not None:
+        return True
+    return _fold(col.get("name")) in (key_folds or set())
+
+
+def _warn_nullable_key(warnings, schema, owner, col) -> None:
+    if not _nullable(col):
+        return
+    warnings.append(
+        f"key column {_br(schema)}.{_br(owner)}.{_br(col.get('name') or '')} "
+        "is nullable in the catalog; declared NOT NULL"
+    )
 
 
 def _key_ordinal(col):

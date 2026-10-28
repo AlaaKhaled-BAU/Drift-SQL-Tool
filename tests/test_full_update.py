@@ -144,6 +144,26 @@ class FullUpdateRenderTests(unittest.TestCase):
               "nullable": False}],
             False,
         ))
+        forced = render_table_type(
+            "dbo",
+            "NullableKey",
+            [
+                {"name": "Id", "type": "int", "max_length": 4, "precision": 10, "scale": 0,
+                 "nullable": True, "key_ordinal": 1},
+                {"name": "Name", "type": "nvarchar", "max_length": 40, "precision": 0, "scale": 0,
+                 "nullable": True, "key_ordinal": 2},
+                {"name": "Note", "type": "nvarchar", "max_length": 40, "precision": 0, "scale": 0,
+                 "nullable": True},
+            ],
+            False,
+        )
+        self.assertEqual(forced.count("PRIMARY KEY"), 1)
+        self.assertIn("PRIMARY KEY ([Id], [Name])", forced)
+        self.assertIn("[Id] int NOT NULL", forced)
+        self.assertIn("[Name] nvarchar(20) NOT NULL", forced)
+        self.assertIn("[Note] nvarchar(20) NULL", forced)
+        self.assertNotIn("[Id] int NULL", forced)
+        self.assertNotIn("[Name] nvarchar(20) NULL", forced)
 
     def test_excluded_and_schema_bound_referencers_skip_the_type(self):
         blob = "\n".join(self.files.values())
@@ -215,6 +235,150 @@ class FullUpdateRenderTests(unittest.TestCase):
         self.assertNotIn("CREATE PRIMARY KEY", self.unified)
         self.assertNotIn("[FLAGS:", self.unified)
         self.assertIn("PRIMARY KEY CLUSTERED ([Id], [Name])", self.unified)
+        name_add = "ALTER TABLE [dbo].[Parent] ADD [Name] nvarchar(20) NOT NULL"
+        self.assertIn(name_add, self.unified)
+        self.assertIn(name_add, self.schema)
+        self.assertNotIn("ADD [Name] nvarchar(20) NULL", self.unified)
+        self.assertEqual(self.unified.count("PRIMARY KEY CLUSTERED ([Id], [Name])"), 1)
+        self.assertIn(
+            "key column [dbo].[Parent].[Name] is nullable in the catalog; declared NOT NULL",
+            self.out["manifest"]["warnings"],
+        )
+
+    def test_create_table_and_type_declare_key_columns_not_null(self):
+        nullable = {
+            "type": "int",
+            "max_length": 4,
+            "precision": 10,
+            "scale": 0,
+            "identity": None,
+            "computed": None,
+            "default": None,
+            "nullable": True,
+        }
+        text = {
+            **nullable,
+            "type": "nvarchar",
+            "max_length": 40,
+            "precision": 0,
+            "scale": 0,
+        }
+        left = {
+            "server_label": "l",
+            "databases": {
+                "Aaa": {
+                    "objects": {
+                        "dbo.FreshKey": {
+                            "schema": "dbo",
+                            "name": "FreshKey",
+                            "type": "SqlTable",
+                            "columns": [
+                                {**nullable, "name": "Id"},
+                                {**text, "name": "Code"},
+                                {**text, "name": "Note"},
+                            ],
+                            "indexes": [
+                                {
+                                    "name": "PK_FreshKey",
+                                    "is_primary_key": True,
+                                    "is_unique_constraint": False,
+                                    "is_unique": True,
+                                    "clustered": True,
+                                    "columns": ["Id", "Code"],
+                                    "included": [],
+                                    "filter": None,
+                                },
+                                {
+                                    "name": "UQ_FreshKey_Code",
+                                    "is_primary_key": False,
+                                    "is_unique_constraint": True,
+                                    "is_unique": True,
+                                    "clustered": False,
+                                    "columns": ["Code"],
+                                    "included": [],
+                                    "filter": None,
+                                },
+                            ],
+                            "foreign_keys": [],
+                        },
+                        "dbo.NullableType": {
+                            "schema": "dbo",
+                            "name": "NullableType",
+                            "type": "SqlUserDefinedTableType",
+                            "memory_optimized": False,
+                            "columns": [
+                                {**nullable, "name": "Id", "key_ordinal": 1},
+                                {**text, "name": "Name", "key_ordinal": 2},
+                            ],
+                        },
+                        "dbo.BlockedType": {
+                            "schema": "dbo",
+                            "name": "BlockedType",
+                            "type": "SqlUserDefinedTableType",
+                            "memory_optimized": False,
+                            "columns": [
+                                {**nullable, "name": "Id", "key_ordinal": 1},
+                            ],
+                        },
+                        "dbo.alpha_hide": {
+                            "schema": "dbo",
+                            "name": "alpha_hide",
+                            "type": "SqlProcedure",
+                            "schema_bound": False,
+                            "definition": (
+                                "CREATE PROCEDURE [dbo].[alpha_hide] AS BEGIN SELECT 1 END"
+                            ),
+                        },
+                    },
+                    "dependencies": [
+                        {
+                            "from": "dbo.alpha_hide",
+                            "to": "dbo.BlockedType",
+                            "to_class": "TYPE",
+                            "referenced_database_name": None,
+                        }
+                    ],
+                }
+            },
+        }
+        right = {
+            "server_label": "r",
+            "databases": {"Aaa": {"objects": {}, "dependencies": []}},
+        }
+        out = render_full_update(left, right)
+        blob = out["files"]["unified_full_update.sql"]
+        self.assertIn("[Id] int NOT NULL", blob)
+        self.assertIn("[Code] nvarchar(20) NOT NULL", blob)
+        self.assertIn("[Note] nvarchar(20) NULL", blob)
+        self.assertIn("PRIMARY KEY CLUSTERED ([Id], [Code])", blob)
+        self.assertIn("UNIQUE NONCLUSTERED ([Code])", blob)
+        self.assertEqual(blob.count("PRIMARY KEY"), 2)
+        self.assertIn("PRIMARY KEY ([Id], [Name])", blob)
+        self.assertNotRegex(blob, r"DROP\s+TYPE\s+\[dbo\]\.\[BlockedType\]")
+        self.assertNotIn("CREATE TYPE [dbo].[BlockedType]", blob)
+        self.assertRegex(blob, r"SKIP[^\n]*\[dbo\]\.\[BlockedType\]")
+        self.assertNotRegex(blob, r"(?i)\bDROP\s+PROCEDURE\s+\[dbo\]\.\[alpha_hide\]")
+        warnings = out["manifest"]["warnings"]
+        self.assertIn(
+            "key column [dbo].[FreshKey].[Id] is nullable in the catalog; declared NOT NULL",
+            warnings,
+        )
+        self.assertIn(
+            "key column [dbo].[FreshKey].[Code] is nullable in the catalog; declared NOT NULL",
+            warnings,
+        )
+        self.assertNotIn(
+            "key column [dbo].[FreshKey].[Note] is nullable in the catalog; declared NOT NULL",
+            warnings,
+        )
+        self.assertIn(
+            "key column [dbo].[NullableType].[Name] is nullable in the catalog; declared NOT NULL",
+            warnings,
+        )
+        self.assertNotIn(
+            "key column [dbo].[BlockedType].[Id] is nullable in the catalog; declared NOT NULL",
+            warnings,
+        )
 
     def test_database_order_is_not_alphabetical(self):
         self.assertLess(self.unified.index("USE [Zed]"), self.unified.index("USE [Aaa]"))
