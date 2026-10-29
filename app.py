@@ -499,7 +499,8 @@ _BLOCKED_SERVERS = {"10.0.10.105"}
 _REFUSED_DROP = frozenset({
     "olives_bo", "olives_peek", "olives_pos", "osfa_db", "osfa_peek",
 })
-# The tool iterates only these four names. Match is case-insensitive.
+# Full Update's "all databases" loop only. The Connect dropdown lists every
+# user database; Compare, datacopy, and Apply share that list.
 # olives_log is the database the operator named (typed "olives)log").
 _LOOP_DATABASES = frozenset({
     "olives_bo",
@@ -969,7 +970,7 @@ def api_live_databases():
     try:
         cur = conn.cursor()
         cur.execute("SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name")
-        names = _loop_databases([row[0] for row in cur.fetchall()])
+        names = [row[0] for row in cur.fetchall()]
     finally:
         conn.close()
     return jsonify({"ok": True, "databases": names})
