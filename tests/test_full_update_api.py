@@ -289,15 +289,15 @@ class FullUpdateApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_filter_ui_has_no_second_copy_of_the_tokens(self):
-        js = pathlib.Path("static/app.js").read_text()
-        html = pathlib.Path("templates/index.html").read_text()
+        js = pathlib.Path("static/app.js").read_text(encoding="utf-8")
+        html = pathlib.Path("templates/index.html").read_text(encoding="utf-8")
         self.assertIn("/api/procedure_filter/defaults", js)
         self.assertNotIn("hammoudeh", js)
         self.assertNotIn("hammoudeh", html)
         self.assertNotIn("thuraya", js)
 
     def test_full_update_button_markup(self):
-        html = pathlib.Path("templates/index.html").read_text()
+        html = pathlib.Path("templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="go"', html)
         self.assertIn(">Compare<", html)
         self.assertRegex(html, r'id="fullUpdateBtn"[^>]*>Full Update<')
@@ -311,7 +311,7 @@ class FullUpdateApiTests(unittest.TestCase):
         self.assertIn(">Starts with<", html)
 
     def test_full_update_button_stays_disabled_until_the_stream_ends(self):
-        js = pathlib.Path("static/app.js").read_text()
+        js = pathlib.Path("static/app.js").read_text(encoding="utf-8")
         start = js.index("fullUpdateBtn.addEventListener")
         handler = js[start:js.index("/* end fullUpdateBtn */")]
         self.assertLess(handler.index("setBusy("), handler.index("fetch("))

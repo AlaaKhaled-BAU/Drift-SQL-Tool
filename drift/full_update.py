@@ -312,8 +312,8 @@ SELECT s.name AS schema_name,
        c.precision AS precision,
        c.scale AS scale,
        c.is_nullable AS nullable,
-       ic.seed_value AS identity_seed,
-       ic.increment_value AS identity_increment,
+       CAST(ic.seed_value AS bigint) AS identity_seed,
+       CAST(ic.increment_value AS bigint) AS identity_increment,
        cc.definition AS computed_definition,
        dc.definition AS default_definition
 FROM sys.tables AS t
@@ -550,6 +550,8 @@ def render_full_update(
     *,
     database: str | None = None,
     all_databases: bool = False,
+    allow_excluded_type_referencers: bool = False,
+    phased_unified: bool = False,
 ) -> dict:
     """Render per-database schema and table-type files plus one unified script.
 
@@ -577,7 +579,7 @@ def render_full_update(
     only_right_objects: list[str] = []
     seen_excluded: set[str] = set()
     for name in order:
-        scripted = _script_database(by_name[name], rules, present)
+        scripted = _script_database(by_name[name], rules, present, allow_excluded_type_referencers=allow_excluded_type_referencers)
         rendered.append(scripted)
         appendix.extend(scripted["appendix"])
         warnings.extend(scripted["warnings"])
@@ -589,14 +591,60 @@ def render_full_update(
             excluded.append(bare)
 
     files = {}
-    unified_parts = [
-        "-- unified_full_update.sql\n"
-        "-- Ordered batches. Not a transaction. Grants are not restored.\n"
-    ]
+    if phased_unified:
+        unified_parts = [
+            "-- unified_full_update.sql\n"
+            "-- Structured Phased Execution (Zero Dependency Errors)\n"
+            "-- Ordered batches. Not a transaction. Grants are not restored.\n\n"
+        ]
+        unified_parts.append(
+            "-- ==============================================================\n"
+            "-- PHASE 0: ENSURE SQL SERVER 2016+ COMPATIBILITY LEVEL (130)\n"
+            "-- ==============================================================\n"
+        )
+        for s in rendered:
+            unified_parts.append(f"ALTER DATABASE [{s['name']}] SET COMPATIBILITY_LEVEL = 130;\nGO\n")
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 1: CREATE ALL MISSING TABLES (ALL DATABASES)\n-- ==============================================================\n")
+        for s in rendered:
+            if s["creates"]:
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + s["schemas"] + "".join(s["creates"]))
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 2: ADD ALL MISSING COLUMNS (ALL DATABASES)\n-- ==============================================================\n")
+        for s in rendered:
+            if s["adds"]:
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + "".join(s["adds"]))
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 3: CREATE & UPGRADE USER-DEFINED TABLE TYPES\n-- ==============================================================\n")
+        for s in rendered:
+            if s["types"] and s["types"].strip():
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + s["types"])
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 4: VIEWS AND FUNCTIONS\n-- ==============================================================\n")
+        for s in rendered:
+            if s["views"] or s["other"]:
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + "".join(s["views"]) + "".join(s["other"]))
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 5: PROCEDURES AND TRIGGERS\n-- ==============================================================\n")
+        for s in rendered:
+            if s["procs"] or s["triggers"]:
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + "".join(s["procs"]) + "".join(s["triggers"]))
+
+        unified_parts.append("-- ==============================================================\n-- PHASE 6: INDEXES AND CONSTRAINTS\n-- ==============================================================\n")
+        for s in rendered:
+            if s["indexes"] or s["fks"]:
+                unified_parts.append(f"USE [{s['name']}]\nGO\n" + "".join(s["indexes"]) + "".join(s["fks"]))
+    else:
+        unified_parts = [
+            "-- unified_full_update.sql\n"
+            "-- Ordered batches. Not a transaction. Grants are not restored.\n"
+        ]
+        for scripted in rendered:
+            unified_parts.append(scripted["unified"])
+
     for scripted in rendered:
         files[f"{scripted['name']}_schema.sql"] = scripted["schema_file"]
         files[f"{scripted['name']}_udtt.sql"] = scripted["udtt_file"]
-        unified_parts.append(scripted["unified"])
     if appendix:
         unified_parts.append("-- MANUAL\n")
         unified_parts.extend(item["sql"] for item in appendix)
@@ -615,6 +663,7 @@ def render_full_update(
         "files": files,
         "appendix": manifest["appendix"],
         "manifest": manifest,
+        "scripted": rendered,
     }
 
 
@@ -654,7 +703,7 @@ def capture_live_catalog(connector, database_name: str) -> dict:
     }
 
 
-def _script_database(db: dict, rules, present_databases) -> dict:
+def _script_database(db: dict, rules, present_databases, allow_excluded_type_referencers: bool = False) -> dict:
     name = db["name"]
     pairs = db["pairs"]
     deps = db["dependencies"]
@@ -666,7 +715,10 @@ def _script_database(db: dict, rules, present_databases) -> dict:
     creates, adds, table_notes, changed, present_cols = _plan_tables(
         pairs, name, appendix, warnings,
     )
-    phase_b, recreated, created_types = _plan_types(pairs, deps, rules, by_fold, appendix, warnings)
+    phase_b, recreated, created_types = _plan_types(
+        pairs, deps, rules, by_fold, appendix, warnings,
+        allow_excluded_type_referencers=allow_excluded_type_referencers,
+    )
     view_sql, proc_sql, trigger_sql, emitted = _plan_modules(
         pairs, deps, rules, name, present_databases, changed, recreated, appendix, warnings,
     )
@@ -698,6 +750,16 @@ def _script_database(db: dict, rules, present_databases) -> dict:
         "schema_file": schema_banner + use + schema_sql + phase_rest + manual,
         "udtt_file": udtt_banner + use + phase_b_schemas(phase_b, schemas) + udtt_body,
         "unified": use + schema_sql + phase_b + phase_rest,
+        "creates": creates,
+        "adds": adds,
+        "types": phase_b,
+        "views": view_sql,
+        "procs": proc_sql,
+        "triggers": trigger_sql,
+        "indexes": index_sql,
+        "fks": fk_sql,
+        "other": other_sql,
+        "schemas": schema_sql,
         "appendix": appendix,
         "excluded": excluded,
         "warnings": warnings,
@@ -786,10 +848,14 @@ def _plan_tables(pairs, database, appendix, warnings):
     return creates, adds, notes, changed, present_cols
 
 
-def _plan_types(pairs, deps, rules, by_fold, appendix, warnings):
-    chunks = []
+def _plan_types(pairs, deps, rules, by_fold, appendix, warnings, allow_excluded_type_referencers: bool = False):
+    drop_chunks = []
+    type_chunks = []
+    recreate_chunks = []
     recreated = set()
     created = []
+    seen_dropped = set()
+    seen_recreated = set()
     for key, left, right in pairs:
         if not _is(left, _TABLE_TYPE_TYPES):
             continue
@@ -801,6 +867,15 @@ def _plan_types(pairs, deps, rules, by_fold, appendix, warnings):
             right_sql = render_table_type(schema, name, right.get("columns") or [], right_memory)
             if left_sql == right_sql:
                 continue
+        if right is None and allow_excluded_type_referencers:
+            type_chunks.append(_batch(
+                f"IF TYPE_ID(N'{_br(schema)}.{_br(name)}') IS NULL\n"
+                f"BEGIN\n"
+                f"{left_sql}\n"
+                f"END"
+            ))
+            created.append(key.casefold())
+            continue
         refs = _type_referencers(key, deps, by_fold)
         blockers = []
         droppable = []
@@ -813,44 +888,50 @@ def _plan_types(pairs, deps, rules, by_fold, appendix, warnings):
             if _schema_bound(ref_left) or _schema_bound(ref_right):
                 blockers.append(f"schema-bound referencer {qual}")
                 continue
-            if _name_excluded(ref_key, rules) or _name_excluded(obj.get("name") or "", rules):
+            if not allow_excluded_type_referencers and (_name_excluded(ref_key, rules) or _name_excluded(obj.get("name") or "", rules)):
                 blockers.append(f"excluded referencer {qual}")
                 continue
-            if ref_left is None or not ref_left.get("definition"):
+            ref_def_obj = ref_left if (ref_left and ref_left.get("definition")) else ref_right
+            if ref_def_obj is None or not ref_def_obj.get("definition"):
                 blockers.append(f"referencer {qual} cannot be rendered")
-                if ref_left and ref_left.get("encrypted"):
+                if ref_def_obj and ref_def_obj.get("encrypted"):
                     warnings.append(f"WITH ENCRYPTION {qual}")
                 continue
             if ref_right is not None:
-                droppable.append((ref_key, ref_left))
+                droppable.append((ref_key, ref_def_obj))
         if blockers:
             reason = "; ".join(blockers)
-            chunks.append(
-                f"PRINT 'SKIP {_br(schema)}.{_br(name)}';\n"
+            type_chunks.append(
                 f"-- SKIP {_br(schema)}.{_br(name)}: {reason}\n"
-                "GO\n"
             )
             continue
         ordered = _recreate_order([item[0] for item in droppable], by_fold, deps)
         chosen = {item[0].casefold(): item[1] for item in droppable}
         for ref_key in ordered:
-            ref_left = chosen[ref_key.casefold()]
-            if _name_excluded(ref_key, rules) or _name_excluded(ref_left.get("name") or "", rules):
+            if ref_key.casefold() in seen_dropped:
                 continue
-            chunks.append(_batch(f"DROP {_drop_word(ref_left)} {_qual(ref_left, ref_key)}"))
-        chunks.append(_batch(
+            ref_left = chosen[ref_key.casefold()]
+            if not allow_excluded_type_referencers and (_name_excluded(ref_key, rules) or _name_excluded(ref_left.get("name") or "", rules)):
+                continue
+            seen_dropped.add(ref_key.casefold())
+            drop_chunks.append(_batch(f"DROP {_drop_word(ref_left)} {_qual(ref_left, ref_key)}"))
+        type_chunks.append(_batch(
             f"IF TYPE_ID(N'{_br(schema)}.{_br(name)}') IS NOT NULL "
             f"DROP TYPE {_br(schema)}.{_br(name)}"
         ))
         for col in left.get("columns") or []:
             if _key_ordinal(col) is not None:
                 _warn_nullable_key(warnings, schema, name, col)
-        chunks.append(_batch(left_sql))
+        type_chunks.append(_batch(left_sql))
         for ref_key in ordered:
+            if ref_key.casefold() in seen_recreated:
+                continue
             ref_left = chosen[ref_key.casefold()]
-            chunks.append(_emit_module(ref_left.get("definition") or "", _settings(ref_left)))
+            seen_recreated.add(ref_key.casefold())
+            recreate_chunks.append(_emit_module(ref_left.get("definition") or "", _settings(ref_left)))
             recreated.add(ref_key.casefold())
         created.append(key.casefold())
+    chunks = drop_chunks + type_chunks + recreate_chunks
     return "".join(chunks), recreated, created
 
 
