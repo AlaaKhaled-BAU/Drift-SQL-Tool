@@ -155,3 +155,41 @@ class ClassifyClientChangeTests(unittest.TestCase):
         got = classify_client_change(row, 66)
         self.assertFalse(got["list"])
         self.assertEqual(got["kind"], "noise")
+
+
+from drift.diff_render import render_split_diff  # noqa: E402
+from drift.proc_lens import compare_procs  # noqa: E402
+
+
+class TrimmedDiffReuseTests(unittest.TestCase):
+    def test_active_read_diff_shows_a_hide_and_an_extra(self):
+        master = """CREATE PROCEDURE [dbo].[zz_keep]
+AS
+BEGIN
+ IF @ClientActive = 66
+ BEGIN
+  SELECT 'keep'
+  SELECT 'b'
+ END
+END"""
+        client = """CREATE PROCEDURE [dbo].[zz_keep]
+AS
+BEGIN
+ IF @ClientActive = 66
+ BEGIN
+  SELECT 'keep'
+  SELECT 'extra'
+ END
+END"""
+        lens = compare_procs(master, client, 66, "active_read", direction="client_to_105")
+        self.assertTrue(lens["ok"])
+        self.assertFalse(lens["identical"])
+        self.assertNotIn("ELSE", lens["preview_left"].upper())
+        rich = render_split_diff(lens["preview_left"], lens["preview_right"])
+        tags = [
+            row["tag"]
+            for hunk in rich["hunks"] if not hunk.get("collapsed")
+            for row in hunk["lines"]
+        ]
+        self.assertIn("delete", tags)
+        self.assertIn("insert", tags)
