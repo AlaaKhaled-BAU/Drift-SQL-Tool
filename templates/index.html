@@ -36,9 +36,6 @@
       <button type="button" role="tab" id="toolTabChanges" class="tool-tab tab-tip" data-tool="changes" aria-selected="false"
         title="What this client has that 105 does not."
        >Client changes</button>
-      <button type="button" role="tab" id="toolTabDrift" class="tool-tab tab-tip" data-tool="drift" aria-selected="false"
-        title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
-       >Drift tool</button>
       <button type="button" role="tab" id="toolTabSettings" class="tool-tab tab-tip" data-tool="settings" aria-selected="false"
         title="Where .bak files are restored: Docker container or your SQL Server (server, port, authentication).">Settings</button>
     </nav>
@@ -318,7 +315,7 @@
 
     <div id="paneChanges" class="tool-pane" data-tool="changes" hidden>
       <h1>Client changes</h1>
-      <div class="sub">What this client has that 105 does not. Unchanged objects stay hidden.</div>
+      <div class="sub">Client customizations for this ClientActive id. Objects that exist only on 105 stay in Scripts.</div>
       <div class="run-actions">
         <label class="trim-label">ClientActive ID <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="optional"></label>
         <button type="button" id="go" class="btn-primary">Show changes</button>
@@ -326,8 +323,13 @@
       </div>
       <p id="changeStatus" class="hint" hidden></p>
       <div id="changesConn"></div>
+      <div id="changeTrimErrors" class="hint" hidden></div>
       <div id="changeGroups"></div>
       <div id="changeNames" hidden></div>
+      <div id="changeProcBar" class="run-actions" hidden>
+        <button type="button" class="ghost sm" id="inspectSelected">Inspect selected</button>
+        <button type="button" class="ghost sm" id="inspectAll">Inspect all</button>
+      </div>
       <div id="changeDiff" hidden></div>
     </div>
 
@@ -359,44 +361,6 @@
           <button type="button" id="scratchSaveBtn">Save</button>
           <span id="scratchStatus" class="hint" role="status" aria-live="polite"></span>
         </div>
-      </section>
-    </div>
-
-    <div id="paneDrift" class="tool-pane" data-tool="drift" hidden>
-      <h1>Drift tool</h1>
-      <div class="sub">Procedure differences for this run.</div>
-      <div id="driftBakBanner" class="run-warning">Run a <code>.bak</code> SQL Compare first (same picker / <code>run_id</code>). Live scan cannot drive Drift lenses.</div>
-      <div id="driftLiveBanner" class="run-warning" hidden>Live scan mode - Drift lenses are disabled until you run a <code>.bak</code> compare.</div>
-
-      <section class="block drift-panel" id="driftControls" hidden>
-        <div class="drift-row">
-          <label>Direction
-            <select id="driftDirection">
-              <option value="client_to_105">Review client extras</option>
-              <option value="105_to_client">105 → Client</option>
-            </select>
-          </label>
-          <label>Modified procedure
-            <select id="driftFinding"></select>
-          </label>
-          <label>ClientActive ID
-            <input id="driftClientActiveId" type="number" min="1" step="1">
-          </label>
-        </div>
-        <div class="drift-lenses" role="radiogroup" aria-label="Drift lens">
-          <label><input type="radio" name="driftLens" value="full" checked> Full drift</label>
-          <label><input type="radio" name="driftLens" value="active_read"> ClientActive reads (both DBs)</label>
-          <label><input type="radio" name="driftLens" value="active_plus_else"> ClientActive reads + ELSE</label>
-        </div>
-        <div id="driftMeta" class="hint"></div>
-        <div id="driftWarn" class="run-warning" hidden></div>
-        <pre id="driftPreview" class="drift-preview"></pre>
-        <div class="drift-copy-row">
-          <span id="driftCopyKind" class="hint"></span>
-          <button type="button" id="driftCopyBtn" class="ghost sm" disabled>Copy</button>
-          <span id="driftCopyToast" class="copy-toast" hidden>Copied</span>
-        </div>
-        <pre id="driftCopySql" class="drift-copy-sql" hidden></pre>
       </section>
     </div>
   </main>

@@ -41,7 +41,8 @@ let IS_LIVE_SCAN = false;
 let ACTIVE_COMPARE_SUBTAB = "schema";
 let ACTIVE_CONSTRAINTS_ONLY = false;
 let DATACOPY_TABLES = [];
-let LAST_DRIFT_COPY_SQL = "";
+let CHANGE_ROWS = [];
+let INSPECTED_DIFFS = {};
 let APPLY_INTERACTIVE_SESSION = null;
 let APPLY_INTERACTIVE_WAITING = null;
 
@@ -447,7 +448,6 @@ async function loadRun(runId) {
   if (liveRes) liveRes.style.display = "none";
   document.querySelectorAll(".run-item").forEach(el => el.classList.toggle("active", el.dataset.run === runId));
   renderResults(body.run_id, body.meta, body.workspaces);
-  syncDriftFromRun();
 }
 
 document.getElementById("newRunBtn")?.addEventListener("click", () => {
@@ -459,7 +459,6 @@ document.getElementById("newRunBtn")?.addEventListener("click", () => {
   document.querySelectorAll(".run-item").forEach(el => el.classList.remove("active"));
   CURRENT_RUN_ID = null;
   updateCompareModeUi();
-  syncDriftFromRun();
 });
 
 /* ============================== Picker (live | bak) ============================== */
@@ -654,7 +653,7 @@ goBtn.addEventListener("click", async () => {
     CURRENT_META = result.meta || {};
     CURRENT_WORKSPACES = result.workspaces || {};
     changeStatus("");
-    renderClientChanges();
+    classifyClientChanges();
     es.close();
     clearBusy(goBtn);
     loadRunList();
@@ -1986,28 +1985,56 @@ function renderMetricsHtml(m, direction) {
   </table>`;
 }
 
-function clientChangeRows() {
-  const idx = CURRENT_WORKSPACES.client_to_105;
-  return ((idx && idx.findings) || []).filter(f =>
-    (f.role === "added" || f.role === "modified")
-    && f.category !== "formatting_only"
-    && f.category !== "no_difference"
-    && !(f.scope && f.scope.irrelevant_to_client));
+async function classifyClientChanges() {
+  INSPECTED_DIFFS = {};
+  const cidEl = document.getElementById("compareClientActiveId");
+  const clientActiveId = cidEl && cidEl.value ? Number(cidEl.value) : null;
+  if (!CURRENT_RUN_ID) {
+    CHANGE_ROWS = [];
+    renderClientChanges();
+    return;
+  }
+  const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/client_changes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_active_id: clientActiveId }),
+  });
+  if (!ok) {
+    changeStatus(body.error || "Could not classify changes", true);
+    return;
+  }
+  CHANGE_ROWS = body.rows || [];
+  if (body.needs_client_active) {
+    changeStatus("Enter a ClientActive ID and show changes again. Procedures were not compared.");
+  } else {
+    changeStatus("");
+  }
+  renderClientChanges();
 }
 
 function renderClientChanges() {
-  const rows = clientChangeRows();
   const host = document.getElementById("changeGroups");
   const names = document.getElementById("changeNames");
   const diff = document.getElementById("changeDiff");
+  const bar = document.getElementById("changeProcBar");
+  const trimHost = document.getElementById("changeTrimErrors");
   if (!host) return;
   names.hidden = true;
   diff.hidden = true;
+  if (bar) bar.hidden = true;
+  const listed = CHANGE_ROWS.filter(f => f.list);
+  const failed = CHANGE_ROWS.filter(f => f.kind === "trim_failed");
+  if (trimHost) {
+    trimHost.hidden = failed.length === 0;
+    trimHost.textContent = failed.length
+      ? "Could not trim: " + failed.map(f => `${f.bare_name} (${f.reason || "trim failed"})`).join("; ")
+      : "";
+  }
   const used = new Set();
   const blocks = [];
   const order = ["Tables", "Columns", "Indexes", "Constraints", "Table types", "Views", "Functions", "Triggers", "Procedures", "Other"];
   for (const label of order) {
-    const hit = rows.filter(f => !used.has(f.id) && changeGroup(f.type) === label);
+    const hit = listed.filter(f => !used.has(f.id) && changeGroup(f.type) === label);
     hit.forEach(f => used.add(f.id));
     if (hit.length) blocks.push([label, hit]);
   }
@@ -2015,15 +2042,109 @@ function renderClientChanges() {
   host.innerHTML = blocks.map(([label, hit]) =>
     `<button type="button" class="ghost change-group" data-group="${escapeHtml(label)}">${escapeHtml(label)} (${hit.length})</button>`
   ).join(" ") || `<p class="hint">No client changes.</p>`;
-  host.querySelectorAll(".change-group").forEach(btn => btn.addEventListener("click", () => {
-    const list = host._rows[btn.dataset.group] || [];
-    names.hidden = false;
+  host.querySelectorAll(".change-group").forEach(btn => btn.addEventListener("click", () => showChangeNames(btn.dataset.group)));
+}
+
+function showChangeNames(group) {
+  const host = document.getElementById("changeGroups");
+  const names = document.getElementById("changeNames");
+  const diff = document.getElementById("changeDiff");
+  const bar = document.getElementById("changeProcBar");
+  const list = (host._rows && host._rows[group]) || [];
+  names.hidden = false;
+  diff.hidden = true;
+  const procedures = group === "Procedures";
+  if (bar) bar.hidden = !procedures;
+  names.innerHTML = `<button type="button" class="ghost sm" id="changeBack">Groups</button> ` +
+    list.map(f => procedures
+      ? `<label class="change-name"><input type="checkbox" class="change-pick" data-id="${f.id}"> <button type="button" class="ghost change-open" data-id="${f.id}">${escapeHtml(f.bare_name)}</button></label>`
+      : `<button type="button" class="ghost change-open" data-id="${f.id}">${escapeHtml(f.bare_name)}</button>`
+    ).join(" ");
+  names.querySelector("#changeBack").addEventListener("click", () => {
+    names.hidden = true;
     diff.hidden = true;
-    names.innerHTML = `<button type="button" class="ghost sm" id="changeBack">Groups</button> ` +
-      list.map(f => `<button type="button" class="ghost change-name" data-id="${f.id}">${escapeHtml(f.bare_name)}</button>`).join(" ");
-    names.querySelector("#changeBack").addEventListener("click", () => { names.hidden = true; diff.hidden = true; });
-    names.querySelectorAll(".change-name").forEach(b => b.addEventListener("click", () => openChangeDiff(b.dataset.id, b.textContent)));
-  }));
+    if (bar) bar.hidden = true;
+  });
+  names.querySelectorAll(".change-open").forEach(b => b.addEventListener("click", () => openListedChange(b.dataset.id)));
+}
+
+function openListedChange(id) {
+  const row = CHANGE_ROWS.find(f => f.id === id);
+  if (!row) return;
+  if (row.inspect === "procedure") {
+    if (!INSPECTED_DIFFS[id]) {
+      changeStatus("Choose Inspect selected or Inspect all, then click the procedure.");
+      return;
+    }
+    renderInspectedDiff(id, row.bare_name);
+    return;
+  }
+  openChangeDiff(id, row.bare_name);
+}
+
+async function inspectProcedures(ids) {
+  const cidEl = document.getElementById("compareClientActiveId");
+  const clientActiveId = cidEl && cidEl.value ? Number(cidEl.value) : null;
+  if (!clientActiveId) {
+    changeStatus("Enter a ClientActive ID and show changes again. Procedures were not compared.", true);
+    return;
+  }
+  changeStatus("Inspecting procedures…");
+  const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/client_changes/inspect`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_active_id: clientActiveId, finding_ids: ids }),
+  });
+  if (!ok) {
+    changeStatus(body.error || "Inspect failed", true);
+    return;
+  }
+  Object.assign(INSPECTED_DIFFS, body.diffs || {});
+  changeStatus(`${ids.length} procedure(s) ready. Click a name to view the diff.`);
+}
+
+document.getElementById("inspectSelected")?.addEventListener("click", () => {
+  const ids = [...document.querySelectorAll(".change-pick:checked")].map(el => el.dataset.id);
+  if (!ids.length) {
+    changeStatus("Select at least one procedure.");
+    return;
+  }
+  inspectProcedures(ids);
+});
+
+document.getElementById("inspectAll")?.addEventListener("click", () => {
+  const ids = CHANGE_ROWS.filter(f => f.list && f.inspect === "procedure").map(f => f.id);
+  if (!ids.length) {
+    changeStatus("No procedures to inspect.");
+    return;
+  }
+  inspectProcedures(ids);
+});
+
+function renderInspectedDiff(id, name) {
+  const diff = document.getElementById("changeDiff");
+  const body = INSPECTED_DIFFS[id];
+  diff.hidden = false;
+  if (!body || !body.ok) {
+    diff.innerHTML = `<div class="hint">${escapeHtml((body && body.reason) || "No diff")}</div>`;
+    return;
+  }
+  if (body.added_only) {
+    diff.innerHTML = `<div class="run-actions"><strong>${escapeHtml(name)}</strong></div>
+      <div id="richdiff_client_to_105_${id}"></div>`;
+    loadRichDiff("client_to_105", id);
+    return;
+  }
+  const stats = pairDiffStats(body.hunks);
+  diff.innerHTML = `<div class="run-actions"><strong>${escapeHtml(name)}</strong></div>
+    <p class="hint">${escapeHtml(body.header || "")}</p>
+    <p class="hint">${stats.removed} line(s) the client hid — 105 keeps them. ${stats.added} line(s) on the client — review for reflection onto 105. ${stats.changed} line(s) differ on both sides.</p>
+    <div id="inspectedDiff"></div>`;
+  document.getElementById("inspectedDiff").innerHTML = renderSplitDiffHtml(
+    { hunks: body.hunks || [] },
+    { left: "105 (this client reads)", right: "Client (this client reads)" }
+  );
+  wirePairCollapsed(document.getElementById("inspectedDiff"));
 }
 
 function openChangeDiff(id, name) {
@@ -2072,7 +2193,6 @@ function switchTool(tool) {
     }
   }
   if (tool === "compare") switchCompareSubtab(ACTIVE_COMPARE_SUBTAB);
-  if (tool === "drift") syncDriftFromRun();
   if (tool === "settings") loadScratchSettings();
 }
 
@@ -2124,7 +2244,6 @@ function switchCompareSubtab(sub) {
   });
   if (sub === "schema") {
     IS_LIVE_SCAN = false;
-    syncDriftFromRun();
   }
   updateCompareModeUi();
 }
@@ -2138,8 +2257,6 @@ document.getElementById("compareSubTabs")?.addEventListener("keydown", (event) =
 });
 
 function updateCompareModeUi() {
-  const driftLive = document.getElementById("driftLiveBanner");
-  if (driftLive) driftLive.hidden = !IS_LIVE_SCAN;
   document.querySelectorAll("[id^=applyLiveNote_]").forEach(el => {
     el.style.display = IS_LIVE_SCAN ? "block" : "none";
   });
@@ -2654,111 +2771,6 @@ function clearTrimTab() {
 document.getElementById("trimClearBtn")?.addEventListener("click", clearTrimTab);
 document.getElementById("trimClearBottomBtn")?.addEventListener("click", clearTrimTab);
 
-function driftProcFindings(direction) {
-  const idx = CURRENT_WORKSPACES[direction];
-  if (!idx) return [];
-  return idx.findings.filter(f => f.role === "modified" && PROGRAMMABLE_TYPES_JS.has(f.type));
-}
-
-function syncDriftFromRun() {
-  const bakBanner = document.getElementById("driftBakBanner");
-  const controls = document.getElementById("driftControls");
-  const disabled = IS_LIVE_SCAN || !CURRENT_RUN_ID;
-  if (bakBanner) bakBanner.hidden = !disabled;
-  if (controls) controls.hidden = disabled;
-  if (disabled) return;
-
-  const dirSel = document.getElementById("driftDirection");
-  const directions = Object.keys(CURRENT_WORKSPACES);
-  if (dirSel && directions.length) {
-    dirSel.innerHTML = directions.map(d => `<option value="${d}">${DIRECTION_LABEL[d] || d}</option>`).join("");
-    dirSel.value = ACTIVE_DIRECTION && directions.includes(ACTIVE_DIRECTION) ? ACTIVE_DIRECTION : directions[0];
-  }
-  const cid = CURRENT_META.client_active_id || document.getElementById("compareClientActiveId")?.value;
-  const cidInput = document.getElementById("driftClientActiveId");
-  if (cidInput && cid) cidInput.value = cid;
-
-  refreshDriftFindingList();
-}
-
-function refreshDriftFindingList() {
-  const dir = document.getElementById("driftDirection")?.value || ACTIVE_DIRECTION;
-  const sel = document.getElementById("driftFinding");
-  if (!sel) return;
-  const rows = driftProcFindings(dir);
-  if (!rows.length) {
-    sel.innerHTML = `<option value="">No modified procedures in this direction</option>`;
-    document.getElementById("driftPreview").textContent = "";
-    document.getElementById("driftCopyBtn").disabled = true;
-    return;
-  }
-  sel.innerHTML = rows.map(f => `<option value="${escapeHtml(f.id)}">${escapeHtml(f.name)}</option>`).join("");
-  runDriftLens();
-}
-
-document.getElementById("driftDirection")?.addEventListener("change", refreshDriftFindingList);
-document.getElementById("driftFinding")?.addEventListener("change", runDriftLens);
-document.querySelectorAll('input[name="driftLens"]').forEach(r => r.addEventListener("change", runDriftLens));
-document.getElementById("driftClientActiveId")?.addEventListener("change", runDriftLens);
-
-async function runDriftLens() {
-  if (!CURRENT_RUN_ID || IS_LIVE_SCAN) return;
-  const findingId = document.getElementById("driftFinding")?.value;
-  const direction = document.getElementById("driftDirection")?.value;
-  const lens = document.querySelector('input[name="driftLens"]:checked')?.value || "full";
-  const clientActiveId = document.getElementById("driftClientActiveId")?.value || null;
-  if (!findingId) return;
-
-  const preview = document.getElementById("driftPreview");
-  const copyBtn = document.getElementById("driftCopyBtn");
-  const meta = document.getElementById("driftMeta");
-  const warn = document.getElementById("driftWarn");
-  preview.textContent = "Loading lens preview…";
-  copyBtn.disabled = true;
-  setBusy("Loading drift lens…");
-
-  let ok, body;
-  try {
-    ({ ok, body } = await getJSON("/api/proc_lens", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        run_id: CURRENT_RUN_ID,
-        finding_id: findingId,
-        direction,
-        lens,
-        client_active_id: clientActiveId ? Number(clientActiveId) : null,
-      }),
-    }));
-  } finally {
-    clearBusy();
-  }
-  if (!ok) {
-    preview.textContent = body.reason || body.error || "proc_lens failed";
-    if (meta) meta.textContent = "";
-    return;
-  }
-  const show = body.diff_unified || body.preview_right || body.preview_left || "(no diff text)";
-  preview.textContent = show;
-  if (meta) meta.textContent = body.identical ? "Identical under this lens." : "Definitions differ under this lens.";
-  if (warn) {
-    if (body.warning) { warn.textContent = body.warning; warn.hidden = false; }
-    else warn.hidden = true;
-  }
-  const kindEl = document.getElementById("driftCopyKind");
-  if (kindEl) {
-    kindEl.textContent = `copy_kind: ${body.copy_kind || "none"} - paste onto client (${body.copy_side || "client"} CREATE OR ALTER)`;
-  }
-  LAST_DRIFT_COPY_SQL = body.copy_sql || "";
-  copyBtn.disabled = !LAST_DRIFT_COPY_SQL || body.copy_kind === "none";
-}
-
-document.getElementById("driftCopyBtn")?.addEventListener("click", async () => {
-  if (!LAST_DRIFT_COPY_SQL) return;
-  await navigator.clipboard.writeText(LAST_DRIFT_COPY_SQL);
-  showCopyToast(document.getElementById("driftCopyToast"));
-});
-
 function renderLiveScanResults(body) {
   const el = document.getElementById("liveResults");
   const c = body.compare || {};
@@ -2796,7 +2808,6 @@ document.getElementById("liveScanBtn")?.addEventListener("click", async () => {
   const results = document.getElementById("results");
   if (results) results.style.display = "none";
   updateCompareModeUi();
-  syncDriftFromRun();
   const btn = document.getElementById("liveScanBtn");
   setBusy("Running live scan…", btn);
   try {

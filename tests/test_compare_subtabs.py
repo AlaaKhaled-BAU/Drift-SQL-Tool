@@ -32,7 +32,7 @@ class TestCompareSubtabs(unittest.TestCase):
 
     def test_index_tab_titles(self):
         html = self.client.get("/").data.decode("utf-8")
-        for tid in ("toolTabTrimmer", "toolTabCompare", "toolTabDrift"):
+        for tid in ("toolTabTrimmer", "toolTabCompare", "toolTabChanges"):
             self.assertIn(f'id="{tid}"', html)
             self.assertIn("title=", html.split(tid)[1][:400])
 
@@ -244,6 +244,19 @@ class TestCompareSubtabs(unittest.TestCase):
             f"/api/run/{run_id}/file?path=client_to_105/apply/execution_report.json"
         )
         self.assertEqual(r2.status_code, 404)
+
+    def test_client_changes_has_inspect_and_drift_tab_is_gone(self):
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn('id="inspectSelected"', html)
+        self.assertIn('id="inspectAll"', html)
+        self.assertIn('id="changeTrimErrors"', html)
+        self.assertNotIn('id="toolTabDrift"', html)
+        self.assertNotIn('id="paneDrift"', html)
+        js = (Path(__file__).resolve().parent.parent / "static" / "app.js").read_text()
+        self.assertIn("/client_changes/inspect", js)
+        self.assertIn("pairDiffStats", js)
+        self.assertIn("105 keeps", js)
+        self.assertNotIn("changeCopySql", js)
 
 
 if __name__ == "__main__":
