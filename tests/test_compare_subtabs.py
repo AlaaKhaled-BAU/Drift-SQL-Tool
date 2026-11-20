@@ -69,9 +69,9 @@ class TestCompareSubtabs(unittest.TestCase):
             "trimOutCopyBtn",
             "datacopyOutCopyBtn",
             "webOutCopyBtn",
-            "driftCopyBtn",
         ):
             self.assertIn(f'id="{bid}"', html)
+        self.assertNotIn('id="driftCopyBtn"', html)
 
     def test_live_first_schema_markup(self):
         html = self.client.get("/").data.decode("utf-8")
