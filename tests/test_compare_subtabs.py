@@ -91,23 +91,17 @@ class TestCompareSubtabs(unittest.TestCase):
         self.assertNotIn('id="compareSubLivescan"', html)
         self.assertNotIn('id="applyTargetServer"', html)
         self.assertNotIn("reflect client's changes onto 105", html)
-        self.assertIn("Review client extras", html)
+        self.assertIn("Client changes", html)
         self.assertNotIn('id="leftRail"', html)
         self.assertNotIn('id="trimHarvest"', html)
+        self.assertNotIn('id="dirC105"', html)
         self.assertLess(
             html.index('id="pairClientActiveId"'),
             html.index('id="pairMaster"'),
             "Pair ClientActive/lens controls must sit above the two paste boxes",
         )
-        self.assertLess(
-            html.index('id="compareClientActiveId"'),
-            html.index('id="slot_master"'),
-            "Schema ClientActive/direction/types must sit above the source pickers",
-        )
-        self.assertLess(
-            html.index('id="dirC105"'),
-            html.index('id="slot_master"'),
-        )
+        self.assertIn('id="compareClientActiveId"', html)
+        self.assertIn('data-tool="changes"', html)
 
     def test_open_bak_uses_registered_picker(self):
         from app import register_bak_picker

@@ -275,14 +275,19 @@ class FullUpdateApiTests(unittest.TestCase):
             "unified_full_update.sql",
         })
 
-    def test_blocked_server_is_400(self):
-        res = self.client.post("/api/full_update", json={
-            "left": {"kind": "live", "server": "10.0.10.105", "database": "Olives_BO", "user": "sa", "password": "x"},
-            "right": {"kind": "catalog", "path": "tests/fixtures/right_local_catalog.json"},
-            "database": "Olives_BO",
-        })
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("10.0.10.105", res.get_json()["error"])
+    def test_live_105_read_is_allowed(self):
+        def fake_read(side, names, log, label):
+            return {"databases": {"Olives_BO": {"objects": {}, "dependencies": []}}}
+        with mock.patch.object(flask_module, "_read_live_databases", fake_read):
+            res = self.client.post("/api/full_update", json={
+                "left": {"kind": "live", "server": "10.0.10.105", "database": "Olives_BO", "user": "sa", "password": "x"},
+                "right": {"kind": "catalog", "path": "tests/fixtures/right_local_catalog.json"},
+                "database": "Olives_BO",
+            })
+        self.assertEqual(res.status_code, 200, res.get_json())
+        job = _wait_job(res.get_json()["job_id"])
+        self.assertIsNone(job.get("error"))
+        self.assertNotIn("10.0.10.105", str(job.get("error")))
 
     def test_download_rejects_parent_segment(self):
         res = self.client.get("/api/full_update/rid/foo..sql")
@@ -299,8 +304,8 @@ class FullUpdateApiTests(unittest.TestCase):
     def test_full_update_button_markup(self):
         html = pathlib.Path("templates/index.html").read_text(encoding="utf-8")
         self.assertIn('id="go"', html)
-        self.assertIn(">Compare<", html)
-        self.assertRegex(html, r'id="fullUpdateBtn"[^>]*>Full Update<')
+        self.assertIn(">Show changes<", html)
+        self.assertRegex(html, r'id="fullUpdateBtn"[^>]*>Generate scripts<')
         self.assertNotRegex(html, r'id="fullUpdateBtn"[^>]*\bdisabled\b')
         self.assertIn('id="procFilterBtn"', html)
         self.assertIn(">Procedures filter<", html)

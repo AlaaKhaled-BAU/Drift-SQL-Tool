@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Olives DB Drift Tool</title>
+<script>
+(function () {
+  var saved = localStorage.getItem("drift-theme");
+  var theme = saved === "light" || saved === "dark" ? saved
+    : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme", theme);
+})();
+</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -16,14 +24,18 @@
           <div class="brand-name">DB Drift Tool</div>
           <div class="brand-sub">Master (105) vs Client</div>
         </div>
+        <button type="button" class="ghost sm" id="themeToggle" aria-pressed="false">Day</button>
       </div>
       <nav class="tool-tabs" id="toolTabs" role="tablist" aria-label="Tools">
       <button type="button" role="tab" id="toolTabTrimmer" class="tool-tab tab-tip active" data-tool="trimmer" aria-selected="true"
         title="Paste one procedure and a ClientActive ID to see what that client actually runs."
        >Trimmer</button>
       <button type="button" role="tab" id="toolTabCompare" class="tool-tab tab-tip" data-tool="compare" aria-selected="false"
-        title="Tables, columns, live scan, config-row copy, web files, and downloadable client scripts. Procedure bodies live on Drift."
-       >SQL Compare</button>
+        title="Generate schema scripts from a live master and a live client."
+       >Scripts</button>
+      <button type="button" role="tab" id="toolTabChanges" class="tool-tab tab-tip" data-tool="changes" aria-selected="false"
+        title="What this client has that 105 does not."
+       >Client changes</button>
       <button type="button" role="tab" id="toolTabDrift" class="tool-tab tab-tip" data-tool="drift" aria-selected="false"
         title="Procedure-body differences for the current .bak run, with three lenses (full / this client / this client + ELSE). Copy ALTER targets the client only."
        >Drift tool</button>
@@ -136,8 +148,9 @@
     </div>
 
     <div id="paneCompare" class="tool-pane" data-tool="compare" hidden>
-      <h1>SQL Compare</h1>
-      <div class="sub">Schema and files.</div>
+      <h1>Scripts</h1>
+      <div class="sub">Schema scripts for one database. They are downloaded, not run.</div>
+      <div id="scriptsConn"></div>
 
       <nav class="compare-subtabs tool-tabs" id="compareSubTabs" role="tablist" aria-label="SQL Compare views">
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip active" data-compare-sub="schema" aria-selected="true" aria-label="Schema"
@@ -156,36 +169,22 @@
         <section class="block" id="pickerSection">
           <div class="picker-panel" id="pickerPanelLocal">
             <div class="schema-toolbar">
-              <div class="directions">
-                <label><input type="checkbox" id="dirC105" checked> Review client extras <span class="hint">(download-only script; never applied from UI)</span></label>
-                <label><input type="checkbox" id="dir105C"> 105 → Client <span class="hint">(what 105 has that client is missing)</span></label>
-              </div>
-              <div class="type-filter">
-                <div class="type-filter-label">Object types to examine <span class="hint">(default: schema objects; enable Procedures/Views for a full run)</span></div>
-                <div class="type-filter-options">
-                  {% set schema_default = ['Tables', 'Indexes', 'Constraints'] %}
-                  {% for cat in type_categories %}
-                  <label><input type="checkbox" class="typeFilterBox" value="{{ cat }}" {% if cat in schema_default %}checked{% endif %}> {{ cat }}</label>
-                  {% endfor %}
-                </div>
-                <button type="button" class="ghost sm filter-chip" id="pkFkChip" title="Show only primary/foreign key constraints">PK/FK only</button>
-              </div>
               <div class="run-actions">
-                <label class="trim-label">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
-                <button type="button" id="go" class="btn-primary">Compare</button>
-                <button type="button" id="fullUpdateBtn" class="btn-primary">Full Update</button>
+                <label><input type="radio" name="scriptScope" value="one" checked> This database</label>
+                <label><input type="radio" name="scriptScope" id="fullUpdateAllDbs" value="four"> Olives_BO, OSFA_DB, Olives_Log, and Olives_Images</label>
+                <button type="button" id="fullUpdateBtn" class="btn-primary">Generate scripts</button>
                 <button type="button" class="ghost" id="procFilterBtn">Procedures filter</button>
-                <label class="trim-label"><input type="checkbox" id="fullUpdateAllDbs"> Olives_BO, OSFA_DB, Olives_Log, and Olives_Images</label>
               </div>
+              <p class="hint">These scripts do not keep client-only branches. A procedure that differs is included whole. User-defined table types are a separate file.</p>
             </div>
 
-            <div class="picker-grid">
+            <div class="picker-grid" id="connGrid">
               <div class="picker-slot" id="slot_master" data-role="master">
                 <div class="picker-slot-label">Master (105)</div>
                 <div class="side-mode-toggle" role="radiogroup" aria-label="Master source mode">
                   <label><input type="radio" name="sideMode_master" value="live" checked> Live</label>
                   <label><input type="radio" name="sideMode_master" value="bak"> Bak</label>
-                  <label><input type="radio" name="sideMode_master" value="catalog"> Catalog</label>
+                  <label id="masterCatalogChoice"><input type="radio" name="sideMode_master" value="catalog"> Catalog</label>
                 </div>
                 <div class="side-live" id="livePane_master">
                   <input id="liveMasterServer" placeholder="server" class="live-in" autocomplete="off">
@@ -238,7 +237,7 @@
           <div id="log"></div>
         </section>
 
-        <details class="legend block" id="compareLegend">
+        <details class="legend block" id="compareLegend" hidden>
           <summary>What do these mean? - legend</summary>
           <div class="legend-grid">
             <div class="lg-item"><span class="tag added">added</span><div>Exists on the source side of this direction, not the target. In <b>Review client extras</b> this means the client added it.</div></div>
@@ -315,6 +314,21 @@
           <pre id="pkgOut" class="trim-out"></pre>
         </section>
       </div>
+    </div>
+
+    <div id="paneChanges" class="tool-pane" data-tool="changes" hidden>
+      <h1>Client changes</h1>
+      <div class="sub">What this client has that 105 does not. Unchanged objects stay hidden.</div>
+      <div class="run-actions">
+        <label class="trim-label">ClientActive ID <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="optional"></label>
+        <button type="button" id="go" class="btn-primary">Show changes</button>
+        <span class="hint">Procedures only. Both sides are read with this ID.</span>
+      </div>
+      <p id="changeStatus" class="hint" hidden></p>
+      <div id="changesConn"></div>
+      <div id="changeGroups"></div>
+      <div id="changeNames" hidden></div>
+      <div id="changeDiff" hidden></div>
     </div>
 
     <div id="paneSettings" class="tool-pane" data-tool="settings" hidden>

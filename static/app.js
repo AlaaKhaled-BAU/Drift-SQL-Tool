@@ -1,3 +1,20 @@
+(function () {
+  const btn = document.getElementById("themeToggle");
+  if (!btn) return;
+  function paint() {
+    const light = document.documentElement.getAttribute("data-theme") === "light";
+    btn.textContent = light ? "Night" : "Day";
+    btn.setAttribute("aria-pressed", light ? "true" : "false");
+  }
+  paint();
+  btn.addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    localStorage.setItem("drift-theme", next);
+    paint();
+  });
+})();
+
 const logEl = document.getElementById("log");
 const goBtn = document.getElementById("go");
 
@@ -592,30 +609,18 @@ goBtn.addEventListener("click", async () => {
   }
   const master_side = buildSideSpec("master");
   const client_side = buildSideSpec("client");
-  const directions = [];
-  if (document.getElementById("dirC105").checked) directions.push("client_to_105");
-  if (document.getElementById("dir105C").checked) directions.push("105_to_client");
+  const directions = ["client_to_105"];
   if (!master_side || !client_side) {
     alert("Configure both Master (105) and Client (live Connect + database, or a .bak path).");
     return;
   }
-  if (!directions.length) { alert("Pick at least one direction."); return; }
-
-  // D5a: all-checked is sent as null (no filter, a clean full run) rather
-  // than the full list -- keeps "no filter" unambiguous server-side instead
-  // of relying on "happens to list every category" meaning the same thing.
-  const allTypeBoxes = Array.from(document.querySelectorAll(".typeFilterBox"));
-  const checkedTypes = allTypeBoxes.filter(b => b.checked).map(b => b.value);
-  if (!checkedTypes.length) { alert("Select at least one object type to examine."); return; }
-  const typeFilter = checkedTypes.length === allTypeBoxes.length ? null : checkedTypes;
+  const typeFilter = null;
 
   const cidEl = document.getElementById("compareClientActiveId");
   const clientActiveId = cidEl && cidEl.value ? cidEl.value : null;
 
   IS_LIVE_SCAN = false;
-  logEl.innerHTML = "";
-  document.getElementById("logSection").style.display = "block";
-  document.getElementById("results").style.display = "none";
+  changeStatus("");
   setBusy("Comparing…", goBtn);
 
   let ok, body;
@@ -627,12 +632,12 @@ goBtn.addEventListener("click", async () => {
       }),
     }));
   } catch (err) {
-    appendLog("ERROR: " + (err && err.message ? err.message : err), true);
+    changeStatus(err && err.message ? err.message : String(err), true);
     clearBusy(goBtn);
     return;
   }
   if (!ok) {
-    appendLog("ERROR: " + body.error, true);
+    changeStatus(body.error || "Compare failed", true);
     clearBusy(goBtn);
     return;
   }
@@ -640,20 +645,22 @@ goBtn.addEventListener("click", async () => {
   const es = new EventSource(`/api/stream/${body.job_id}`);
   es.addEventListener("log", (e) => {
     const msg = JSON.parse(e.data);
-    appendLog(msg);
+    changeStatus(msg, false);
     setBusyLabel(msg);
   });
   es.addEventListener("result", (e) => {
     const result = JSON.parse(e.data);
-    document.getElementById("pickerSection").style.display = "none";
-    renderResults(result.run_id, result.meta, result.workspaces);
-    syncDriftFromRun();
+    CURRENT_RUN_ID = result.run_id;
+    CURRENT_META = result.meta || {};
+    CURRENT_WORKSPACES = result.workspaces || {};
+    changeStatus("");
+    renderClientChanges();
     es.close();
     clearBusy(goBtn);
     loadRunList();
   });
   es.addEventListener("error", (e) => {
-    if (e.data) appendLog("FAILED: " + JSON.parse(e.data), true);
+    if (e.data) changeStatus(JSON.parse(e.data), true);
     es.close();
     clearBusy(goBtn);
   });
@@ -668,13 +675,11 @@ function buildFullUpdatePayload() {
   let left = null;
   if (mode === "catalog") {
     const path = document.getElementById("catalogPath_master")?.value?.trim() || "";
-    if (!path) return { error: "Choose a catalog file for the left side. Full Update does not open server 105." };
+    if (!path) return { error: "Choose a catalog file for the left side." };
     left = { kind: "catalog", path };
-  } else if (mode === "bak") {
-    left = buildSideSpec("master");
-    if (!left) return { error: "Choose a .bak for the left side. It is restored under a temporary name and dropped after capture." };
   } else {
-    return { error: "Full Update left side is a catalog file or a .bak. This machine does not open server 105." };
+    left = buildSideSpec("master");
+    if (!left) return { error: "Connect Master (live server and database, or a .bak)." };
   }
   const allDatabases = !!document.getElementById("fullUpdateAllDbs")?.checked;
   const rightMode = sideMode("client");
@@ -699,8 +704,6 @@ function buildFullUpdatePayload() {
   } else {
     return { error: "Configure the Client connection (live server and database, or a .bak)." };
   }
-  const server = (right.server || "").trim();
-  if (server === "10.0.10.105") return { error: "Full Update cannot open server 105." };
   const database = document.getElementById("db_client")?.value?.trim() || "";
   return {
     left,
@@ -1499,11 +1502,41 @@ function scrollDiffToText(direction, findingId, searchText) {
   }
 }
 
+function changeStatus(text, isErr) {
+  const el = document.getElementById("changeStatus");
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.className = isErr ? "hint log-err" : "hint";
+}
+
+function changeGroup(type) {
+  const t = type || "";
+  if (t === "SqlTable") return "Tables";
+  if (t === "SqlIndex" || t === "SqlPrimaryKey" || t === "SqlUniqueConstraint") return "Indexes";
+  if (t.includes("Constraint") || t === "SqlForeignKey") return "Constraints";
+  if (/TableType|UserDefinedTable/i.test(t)) return "Table types";
+  if (/Column/i.test(t)) return "Columns";
+  if (t === "SqlView") return "Views";
+  if (t === "SqlProcedure") return "Procedures";
+  if (t.includes("Trigger")) return "Triggers";
+  if (t.includes("Function")) return "Functions";
+  return "Other";
+}
+
 async function loadRichDiff(direction, findingId) {
   const el = document.getElementById(`richdiff_${direction}_${findingId}`);
+  if (!el) return;
   const view = DIFF_VIEW_MODE;  // captured now -- a toggle click while this is in flight re-calls loadRichDiff fresh
   const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/${direction}/richdiff/${findingId}?view=${view}`);
-  if (!ok) { el.innerHTML = `<div class="hint">${escapeHtml(body.error)}</div>`; return; }
+  if (!ok) {
+    const f = CURRENT_WORKSPACES[direction]?.findings?.find(x => x.id === findingId);
+    const msg = f && f.role === "added"
+      ? "Only on the client. 105 has no copy to put beside it."
+      : (body.error || "No diff");
+    el.innerHTML = `<div class="hint">${escapeHtml(msg)}</div>`;
+    return;
+  }
   const diffHint = body.kind === "columns" ? "" :
     `<div class="hint">red = removed, green = added; highlighted words show exactly what changed on a modified line</div>`;
   el.innerHTML = diffHint + (body.kind === "columns" ? renderColumnGrid(body)
@@ -1953,6 +1986,58 @@ function renderMetricsHtml(m, direction) {
   </table>`;
 }
 
+function clientChangeRows() {
+  const idx = CURRENT_WORKSPACES.client_to_105;
+  return ((idx && idx.findings) || []).filter(f =>
+    (f.role === "added" || f.role === "modified")
+    && f.category !== "formatting_only"
+    && f.category !== "no_difference"
+    && !(f.scope && f.scope.irrelevant_to_client));
+}
+
+function renderClientChanges() {
+  const rows = clientChangeRows();
+  const host = document.getElementById("changeGroups");
+  const names = document.getElementById("changeNames");
+  const diff = document.getElementById("changeDiff");
+  if (!host) return;
+  names.hidden = true;
+  diff.hidden = true;
+  const used = new Set();
+  const blocks = [];
+  const order = ["Tables", "Columns", "Indexes", "Constraints", "Table types", "Views", "Functions", "Triggers", "Procedures", "Other"];
+  for (const label of order) {
+    const hit = rows.filter(f => !used.has(f.id) && changeGroup(f.type) === label);
+    hit.forEach(f => used.add(f.id));
+    if (hit.length) blocks.push([label, hit]);
+  }
+  host._rows = Object.fromEntries(blocks);
+  host.innerHTML = blocks.map(([label, hit]) =>
+    `<button type="button" class="ghost change-group" data-group="${escapeHtml(label)}">${escapeHtml(label)} (${hit.length})</button>`
+  ).join(" ") || `<p class="hint">No client changes.</p>`;
+  host.querySelectorAll(".change-group").forEach(btn => btn.addEventListener("click", () => {
+    const list = host._rows[btn.dataset.group] || [];
+    names.hidden = false;
+    diff.hidden = true;
+    names.innerHTML = `<button type="button" class="ghost sm" id="changeBack">Groups</button> ` +
+      list.map(f => `<button type="button" class="ghost change-name" data-id="${f.id}">${escapeHtml(f.bare_name)}</button>`).join(" ");
+    names.querySelector("#changeBack").addEventListener("click", () => { names.hidden = true; diff.hidden = true; });
+    names.querySelectorAll(".change-name").forEach(b => b.addEventListener("click", () => openChangeDiff(b.dataset.id, b.textContent)));
+  }));
+}
+
+function openChangeDiff(id, name) {
+  const diff = document.getElementById("changeDiff");
+  diff.hidden = false;
+  diff.innerHTML = `<div class="run-actions"><strong>${escapeHtml(name)}</strong>
+    <button type="button" class="ghost sm" data-view="split">Side by side</button>
+    <button type="button" class="ghost sm" data-view="unified">One column</button></div>
+    <div id="richdiff_client_to_105_${id}"></div>`;
+  const load = (view) => { DIFF_VIEW_MODE = view; loadRichDiff("client_to_105", id); };
+  diff.querySelectorAll("[data-view]").forEach(b => b.addEventListener("click", () => load(b.dataset.view)));
+  load(DIFF_VIEW_MODE || "split");
+}
+
 /* ============================== Tool tabs (Trimmer / SQL Compare / Drift) ============================== */
 
 function switchTool(tool) {
@@ -1972,6 +2057,20 @@ function switchTool(tool) {
   });
   const shell = document.getElementById("appShell");
   if (shell) shell.classList.add("rail-hidden-on-trimmer");
+  const grid = document.getElementById("connGrid");
+  const home = document.getElementById("scriptsConn");
+  const slot = document.getElementById("changesConn");
+  if (grid && tool === "changes" && slot) slot.prepend(grid);
+  else if (grid && home) home.append(grid);
+  const catalogChoice = document.getElementById("masterCatalogChoice");
+  if (catalogChoice) catalogChoice.hidden = tool === "changes";
+  if (tool === "changes" && sideMode("master") === "catalog") {
+    const live = document.querySelector('#slot_master input[value="live"]');
+    if (live) {
+      live.checked = true;
+      live.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
   if (tool === "compare") switchCompareSubtab(ACTIVE_COMPARE_SUBTAB);
   if (tool === "drift") syncDriftFromRun();
   if (tool === "settings") loadScratchSettings();
@@ -2108,14 +2207,6 @@ async function mountBackfillInputs(direction, findingId, colBody) {
   panel.appendChild(saveBtn);
   detailEl.insertBefore(panel, detailEl.querySelector(".actions"));
 }
-
-document.getElementById("pkFkChip")?.addEventListener("click", () => {
-  ACTIVE_CONSTRAINTS_ONLY = !ACTIVE_CONSTRAINTS_ONLY;
-  ACTIVE_TYPE_FILTER = "";
-  document.getElementById("pkFkChip")?.classList.toggle("active", ACTIVE_CONSTRAINTS_ONLY);
-  const dir = ACTIVE_DIRECTION || Object.keys(CURRENT_WORKSPACES)[0];
-  if (dir) renderFindingsTable(dir);
-});
 
 document.getElementById("datacopyLoadTables")?.addEventListener("click", async () => {
   const btn = document.getElementById("datacopyLoadTables");

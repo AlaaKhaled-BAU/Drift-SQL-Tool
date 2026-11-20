@@ -493,9 +493,7 @@ def _start_compare_job(compare_callable):
     return job_id
 
 
-# Full Update never dials server 105. Left is a catalog file or a .bak restored
-# as drift_left_<id>. Generated SQL is written and not executed.
-_BLOCKED_SERVERS = {"10.0.10.105"}
+# ponytail: live read of 105 is allowed. Apply still refuses to write it.
 _REFUSED_DROP = frozenset({
     "olives_bo", "olives_peek", "olives_pos", "osfa_db", "osfa_peek",
 })
@@ -508,10 +506,6 @@ _LOOP_DATABASES = frozenset({
     "olives_log",
     "olives_images",
 })
-
-
-def _server_blocked(server: str) -> bool:
-    return (server or "").strip().lower() in _BLOCKED_SERVERS
 
 
 def _unsafe_sql_name(name: str) -> bool:
@@ -705,8 +699,6 @@ def _empty_database_names(names: list[str], already: dict) -> dict:
 
 
 def _fill_live_catalog(side: dict, names: list[str], manifest_names: list[str], log, label: str) -> dict:
-    if _server_blocked(side.get("server") or ""):
-        raise ValueError(f"{label}: this machine cannot open 10.0.10.105")
     read = _read_live_databases(side, names, log, label)
     databases = dict(read["databases"])
     databases.update(_empty_database_names(manifest_names, databases))
@@ -745,8 +737,6 @@ def _validate_full_update(body: dict) -> None:
             server = (side.get("server") or "").strip()
             if not server:
                 raise ValueError(f"{label}: live side needs a server")
-            if _server_blocked(server):
-                raise ValueError(f"{label}: this machine cannot open {server}")
     database = body.get("database")
     database = database.strip() if isinstance(database, str) else ""
     requested = body.get("databases")
