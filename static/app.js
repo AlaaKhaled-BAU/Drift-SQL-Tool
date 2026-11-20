@@ -53,9 +53,32 @@ const PROGRAMMABLE_TYPES_JS = new Set([
 
 const HARVEST_EMPTY_COPY = "Branches this client does not run show up here.";
 
+const DIALOG_NATIVE = typeof HTMLDialogElement !== "undefined"
+  && "showModal" in HTMLDialogElement.prototype;
+
+function showAppModal(el) {
+  if (!el) return;
+  el.hidden = false;
+  if (DIALOG_NATIVE && el instanceof HTMLDialogElement) el.showModal();
+}
+
+function hideAppModal(el) {
+  if (!el) return;
+  if (DIALOG_NATIVE && el instanceof HTMLDialogElement && el.open) el.close();
+  el.hidden = true;
+}
+
+function resetWorkProgress() {
+  const prog = document.getElementById("workBarProgress");
+  if (!prog) return;
+  prog.removeAttribute("value");
+  prog.max = 100;
+}
+
 function setBusy(label, btn) {
   const bar = document.getElementById("workBar");
   if (bar) bar.hidden = false;
+  resetWorkProgress();
   const lbl = document.getElementById("workBarLabel");
   if (lbl) lbl.textContent = label;
   document.querySelector(".main-content")?.setAttribute("aria-busy", "true");
@@ -74,6 +97,7 @@ function setBusyLabel(label) {
 function clearBusy(btn) {
   const bar = document.getElementById("workBar");
   if (bar) bar.hidden = true;
+  resetWorkProgress();
   document.querySelector(".main-content")?.removeAttribute("aria-busy");
   if (btn && btn.dataset.prevLabel) {
     btn.textContent = btn.dataset.prevLabel;
@@ -748,7 +772,7 @@ function renderProcFilterRows(rules) {
 async function openProcFilter() {
   const dialog = document.getElementById("procFilterDialog");
   if (!dialog) return;
-  dialog.hidden = false;
+  showAppModal(dialog);
   try {
     const res = await fetch("/api/procedure_filter/defaults");
     const body = await res.json();
@@ -773,18 +797,17 @@ function addProcFilterRule(op) {
 
 document.getElementById("procFilterBtn")?.addEventListener("click", () => { openProcFilter(); });
 document.getElementById("procFilterCloseBtn")?.addEventListener("click", () => {
-  const dialog = document.getElementById("procFilterDialog");
-  if (dialog) dialog.hidden = true;
+  hideAppModal(document.getElementById("procFilterDialog"));
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   const dialog = document.getElementById("procFilterDialog");
   if (!dialog || dialog.hidden) return;
   dialog.hidden = true;
+  if (DIALOG_NATIVE && dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
 });
 document.getElementById("procFilterBackdrop")?.addEventListener("click", () => {
-  const dialog = document.getElementById("procFilterDialog");
-  if (dialog) dialog.hidden = true;
+  hideAppModal(document.getElementById("procFilterDialog"));
 });
 document.getElementById("procFilterContainsBtn")?.addEventListener("click", () => addProcFilterRule("contains"));
 document.getElementById("procFilterStartsBtn")?.addEventListener("click", () => addProcFilterRule("starts_with"));
@@ -1793,8 +1816,7 @@ async function assembleApply(direction) {
 }
 
 function hideApplyErrorModal() {
-  const modal = document.getElementById("applyErrorModal");
-  if (modal) modal.hidden = true;
+  hideAppModal(document.getElementById("applyErrorModal"));
 }
 
 function showApplyErrorModal(waiting) {
@@ -1804,7 +1826,9 @@ function showApplyErrorModal(waiting) {
   document.getElementById("applyErrorMsgno").textContent = `SQL Server error ${waiting.msgno}`;
   document.getElementById("applyErrorPreview").textContent = waiting.sql_preview || "";
   document.getElementById("applyErrorMessage").textContent = waiting.msg || "";
-  modal.hidden = false;
+  showAppModal(modal);
+  const initial = document.getElementById("applyErrSkip") || document.getElementById("applyErrStop");
+  setTimeout(() => initial?.focus(), 0);
 }
 
 function renderApplyInteractiveStatus(direction, payload) {
@@ -1934,11 +1958,14 @@ function renderMetricsHtml(m, direction) {
 function switchTool(tool) {
   if (!tool) return;
   ACTIVE_TOOL = tool;
+  let selectedTab = null;
   document.querySelectorAll("#toolTabs .tool-tab").forEach(btn => {
     const on = btn.dataset.tool === tool;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) selectedTab = btn;
   });
+  scrollTabIntoView(selectedTab);
   document.querySelectorAll(".tool-pane").forEach(pane => {
     const on = pane.dataset.tool === tool;
     pane.hidden = !on;
@@ -1953,13 +1980,46 @@ function switchTool(tool) {
 document.querySelectorAll("#toolTabs .tool-tab").forEach(btn =>
   btn.addEventListener("click", () => switchTool(btn.dataset.tool)));
 
+function scrollTabIntoView(tab) {
+  tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function handleTablistArrowKeys(event, tabs, onActivate) {
+  const navKeys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+  if (!navKeys.includes(event.key)) return;
+  if (!tabs.length) return;
+  let idx = tabs.indexOf(document.activeElement);
+  if (idx === -1) {
+    idx = tabs.findIndex(t => t.getAttribute("aria-selected") === "true");
+  }
+  if (idx === -1) return;
+  event.preventDefault();
+  let next = idx;
+  if (event.key === "ArrowLeft") next = (idx - 1 + tabs.length) % tabs.length;
+  else if (event.key === "ArrowRight") next = (idx + 1) % tabs.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = tabs.length - 1;
+  const tab = tabs[next];
+  onActivate(tab);
+  tab.focus();
+  scrollTabIntoView(tab);
+}
+
+document.getElementById("toolTabs")?.addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("#toolTabs .tool-tab")];
+  handleTablistArrowKeys(event, tabs, (tab) => switchTool(tab.dataset.tool));
+});
+
 function switchCompareSubtab(sub) {
   ACTIVE_COMPARE_SUBTAB = sub;
+  let selectedTab = null;
   document.querySelectorAll(".compare-subtab").forEach(btn => {
     const on = btn.dataset.compareSub === sub;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) selectedTab = btn;
   });
+  scrollTabIntoView(selectedTab);
   document.querySelectorAll(".compare-subpane").forEach(pane => {
     pane.hidden = pane.dataset.compareSub !== sub;
   });
@@ -1972,6 +2032,11 @@ function switchCompareSubtab(sub) {
 
 document.querySelectorAll(".compare-subtab").forEach(btn =>
   btn.addEventListener("click", () => switchCompareSubtab(btn.dataset.compareSub)));
+
+document.getElementById("compareSubTabs")?.addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("#compareSubTabs .compare-subtab")];
+  handleTablistArrowKeys(event, tabs, (tab) => switchCompareSubtab(tab.dataset.compareSub));
+});
 
 function updateCompareModeUi() {
   const driftLive = document.getElementById("driftLiveBanner");
@@ -2729,11 +2794,14 @@ document.getElementById("pairViewToggle")?.querySelectorAll(".view-toggle-btn").
 });
 
 function switchTrimSubtab(sub) {
+  let selectedTab = null;
   document.querySelectorAll(".trim-subtab").forEach(btn => {
     const on = btn.dataset.trimSub === sub;
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) selectedTab = btn;
   });
+  scrollTabIntoView(selectedTab);
   document.querySelectorAll("#trimSinglePane, #trimPairPane").forEach(pane => {
     pane.hidden = pane.dataset.trimSub !== sub;
   });
@@ -2741,6 +2809,11 @@ function switchTrimSubtab(sub) {
 
 document.querySelectorAll(".trim-subtab").forEach(btn =>
   btn.addEventListener("click", () => switchTrimSubtab(btn.dataset.trimSub)));
+
+document.getElementById("trimSubTabs")?.addEventListener("keydown", (event) => {
+  const tabs = [...document.querySelectorAll("#trimSubTabs .trim-subtab")];
+  handleTablistArrowKeys(event, tabs, (tab) => switchTrimSubtab(tab.dataset.trimSub));
+});
 
 document.getElementById("pairRunBtn")?.addEventListener("click", async () => {
   const btn = document.getElementById("pairRunBtn");
@@ -2897,14 +2970,14 @@ function openProcedureViewer(title, fullText) {
   }
   if (searchInput) searchInput.value = "";
   renderViewerLines(lines);
-  modal.hidden = false;
+  showAppModal(modal);
   setTimeout(() => searchInput?.focus(), 50);
 }
 
 function closeProcedureViewer() {
   const modal = document.getElementById("procViewerModal");
   const preEl = document.getElementById("procViewerPre");
-  if (modal) modal.hidden = true;
+  hideAppModal(modal);
   if (preEl) preEl.textContent = "";
   CURRENT_VIEWER_TEXT = "";
 }
@@ -2937,6 +3010,8 @@ document.getElementById("pairViewMasterBtn")?.addEventListener("click", () => {
 document.getElementById("pairViewClientBtn")?.addEventListener("click", () => {
   openProcedureViewer("Client Procedure Definition", editorValue(document.getElementById("pairClient")));
 });
+
+document.querySelectorAll("dialog.apply-modal").forEach((el) => { el.hidden = true; });
 
 switchTrimSubtab("trim");
 

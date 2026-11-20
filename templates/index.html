@@ -4,9 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Olives DB Drift Tool</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -35,14 +32,14 @@
     </nav>
     </header>
 
-    <div id="workBar" class="work-bar" hidden role="status" aria-live="polite">
-      <div class="work-bar-track"><div class="work-bar-indeterminate"></div></div>
-      <span id="workBarLabel"></span>
+    <div id="workBar" class="work-bar" hidden>
+      <progress id="workBarProgress" class="work-bar-progress" max="100"></progress>
+      <span id="workBarLabel" role="status" aria-live="polite"></span>
     </div>
 
     <div id="paneTrimmer" class="tool-pane" data-tool="trimmer">
       <h1>Trimmer</h1>
-      <div class="sub">Trim one procedure for a ClientActive ID, or pair two pasted definitions under a drift lens (client-only copy SQL).</div>
+      <div class="sub">What this client runs.</div>
       <nav class="compare-subtabs tool-tabs" id="trimSubTabs" role="tablist" aria-label="Trimmer views">
         <button type="button" role="tab" class="tool-tab trim-subtab active" data-trim-sub="trim" aria-selected="true">Trim</button>
         <button type="button" role="tab" class="tool-tab trim-subtab" data-trim-sub="pair" aria-selected="false">Pair</button>
@@ -59,7 +56,7 @@
           spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
         <p class="paste-status hint" id="trimSourceHint" hidden></p>
         <div class="trim-run-bar">
-          <button type="button" id="trimRunBtn">Trim to this client</button>
+          <button type="button" id="trimRunBtn" class="btn-primary">Trim to this client</button>
           <button type="button" id="trimClearBottomBtn" class="ghost" title="Clear procedure and results">Clear</button>
         </div>
         <div id="trimSplit" class="trim-split" hidden>
@@ -140,7 +137,7 @@
 
     <div id="paneCompare" class="tool-pane" data-tool="compare" hidden>
       <h1>SQL Compare</h1>
-      <div class="sub">Compare live SQL Server databases or <code>.bak</code> files, review drift, copy config rows, web files, and download client scripts. Master is never written from this tool.</div>
+      <div class="sub">Schema and files.</div>
 
       <nav class="compare-subtabs tool-tabs" id="compareSubTabs" role="tablist" aria-label="SQL Compare views">
         <button type="button" role="tab" class="tool-tab compare-subtab tab-tip active" data-compare-sub="schema" aria-selected="true" aria-label="Schema"
@@ -175,8 +172,8 @@
               </div>
               <div class="run-actions">
                 <label class="trim-label">ClientActive ID (optional) <input id="compareClientActiveId" type="number" min="1" step="1" placeholder="scope gates"></label>
-                <button id="go">Compare</button>
-                <button type="button" id="fullUpdateBtn">Full Update</button>
+                <button type="button" id="go" class="btn-primary">Compare</button>
+                <button type="button" id="fullUpdateBtn" class="btn-primary">Full Update</button>
                 <button type="button" class="ghost" id="procFilterBtn">Procedures filter</button>
                 <label class="trim-label"><input type="checkbox" id="fullUpdateAllDbs"> Olives_BO, OSFA_DB, Olives_Log, and Olives_Images</label>
               </div>
@@ -322,7 +319,7 @@
 
     <div id="paneSettings" class="tool-pane" data-tool="settings" hidden>
       <h1>Settings</h1>
-      <div class="sub">Where <code>.bak</code> files are restored for compare and rehearse. Temporary databases are always named <code>drift_*</code> / <code>zz_rehearsal_*</code> and are dropped afterwards.</div>
+      <div class="sub">Where backups are restored.</div>
       <section class="block glass-panel" id="scratchSettings">
         <p id="scratchEnvLocked" class="run-warning" hidden>These values come from <code>DRIFT_SCRATCH_*</code> environment variables or <code>.env</code>. Edit those to change them.</p>
         <div class="side-mode-toggle" role="radiogroup" aria-label="Scratch server mode">
@@ -353,7 +350,7 @@
 
     <div id="paneDrift" class="tool-pane" data-tool="drift" hidden>
       <h1>Drift tool</h1>
-      <div class="sub">Procedure-body drift between captured <code>.master.sql</code> / <code>.client.sql</code> for the current compare <code>run_id</code>. Lenses transform captured text in memory - they do not re-query SQL Server.</div>
+      <div class="sub">Procedure differences for this run.</div>
       <div id="driftBakBanner" class="run-warning">Run a <code>.bak</code> SQL Compare first (same picker / <code>run_id</code>). Live scan cannot drive Drift lenses.</div>
       <div id="driftLiveBanner" class="run-warning" hidden>Live scan mode - Drift lenses are disabled until you run a <code>.bak</code> compare.</div>
 
@@ -389,7 +386,7 @@
       </section>
     </div>
   </main>
-<div id="procViewerModal" class="apply-modal proc-modal" hidden role="dialog" aria-labelledby="procViewerTitle" aria-modal="true">
+<dialog id="procViewerModal" class="apply-modal proc-modal" aria-labelledby="procViewerTitle" hidden>
   <div class="apply-modal-backdrop" id="procViewerBackdrop"></div>
   <div class="apply-modal-panel proc-viewer-panel">
     <div class="proc-viewer-head">
@@ -408,9 +405,9 @@
       <pre id="procViewerPre" class="proc-viewer-pre"></pre>
     </div>
   </div>
-</div>
+</dialog>
 
-<div id="procFilterDialog" class="apply-modal" hidden role="dialog" aria-labelledby="procFilterTitle" aria-modal="true">
+<dialog id="procFilterDialog" class="apply-modal" aria-labelledby="procFilterTitle" hidden>
   <div class="apply-modal-backdrop" id="procFilterBackdrop"></div>
   <div class="apply-modal-panel proc-filter-panel">
     <h2 id="procFilterTitle">Procedures filter</h2>
@@ -434,9 +431,9 @@
       <button type="button" class="ghost" id="procFilterCloseBtn">Close</button>
     </div>
   </div>
-</div>
+</dialog>
 
-<div id="applyErrorModal" class="apply-modal" hidden role="dialog" aria-labelledby="applyErrorTitle" aria-modal="true">
+<dialog id="applyErrorModal" class="apply-modal" aria-labelledby="applyErrorTitle" hidden>
   <div class="apply-modal-backdrop" id="applyErrorBackdrop"></div>
   <div class="apply-modal-panel">
     <h2 id="applyErrorTitle">SQL error - choose action</h2>
@@ -450,7 +447,7 @@
       <button type="button" class="danger sm" id="applyErrBindStop">Stop on this error</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <script src="/static/app.js"></script>
 </body>
