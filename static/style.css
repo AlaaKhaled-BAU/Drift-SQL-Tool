@@ -649,3 +649,20 @@ button.danger { background: rgba(255,100,100,.15); border-color: var(--red); col
 .proc-hint-btn:hover {
   color: #67e8f9;
 }
+
+/* Full Update procedure filter. Uses the existing .block / .ghost controls. */
+.proc-filter-panel { max-width: 760px; }
+.proc-filter-groups { display: flex; gap: 16px; align-items: flex-start; }
+.proc-filter-groups .block { flex: 1; margin: 0; min-width: 0; }
+.proc-filter-groups h3 { margin: 0 0 8px; font-size: 13px; }
+.proc-filter-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow: auto; }
+.proc-filter-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border-soft); font-size: 13px;
+}
+.proc-filter-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.proc-filter-add input { flex: 1; min-width: 140px; }
+.full-update-files a { margin-right: 14px; }
+@media (max-width: 720px) {
+  .proc-filter-groups { flex-direction: column; }
+}

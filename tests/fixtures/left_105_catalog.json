@@ -1,0 +1,495 @@
+{
+  "server_label": "105-stand-in",
+  "databases": {
+    "Aaa": {
+      "objects": {
+        "dbo.Parent": {
+          "schema": "dbo",
+          "name": "Parent",
+          "type": "SqlTable",
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            },
+            {
+              "name": "Name",
+              "type": "nvarchar",
+              "max_length": 40,
+              "precision": 0,
+              "scale": 0,
+              "nullable": true,
+              "identity": null,
+              "computed": null,
+              "default": null
+            },
+            {
+              "name": "Flag",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": "((0))"
+            },
+            {
+              "name": "Code",
+              "type": "nvarchar",
+              "max_length": 20,
+              "precision": 0,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            },
+            {
+              "name": "Seq",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": {
+                "seed": 1,
+                "increment": 1
+              },
+              "computed": null,
+              "default": null
+            }
+          ],
+          "indexes": [
+            {
+              "name": "PK_Parent",
+              "is_primary_key": true,
+              "is_unique_constraint": false,
+              "is_unique": true,
+              "clustered": true,
+              "columns": [
+                "Id",
+                "Name"
+              ],
+              "included": [],
+              "filter": null
+            }
+          ],
+          "foreign_keys": []
+        },
+        "dbo.Child": {
+          "schema": "dbo",
+          "name": "Child",
+          "type": "SqlTable",
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            },
+            {
+              "name": "ParentId",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            }
+          ],
+          "indexes": [],
+          "foreign_keys": [
+            {
+              "name": "FK_Child_Parent",
+              "columns": [
+                "ParentId"
+              ],
+              "referenced_schema": "dbo",
+              "referenced_table": "Parent",
+              "referenced_columns": [
+                "Id"
+              ],
+              "referenced_index": "PK_Parent"
+            }
+          ]
+        },
+        "dbo.Fresh": {
+          "schema": "dbo",
+          "name": "Fresh",
+          "type": "SqlTable",
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": {
+                "seed": 1,
+                "increment": 1
+              },
+              "computed": null,
+              "default": null
+            }
+          ],
+          "indexes": [],
+          "foreign_keys": []
+        },
+        "dbo.Tvp": {
+          "schema": "dbo",
+          "name": "Tvp",
+          "type": "SqlUserDefinedTableType",
+          "memory_optimized": false,
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null,
+              "key_ordinal": 1
+            },
+            {
+              "name": "Qty",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null,
+              "key_ordinal": 2
+            }
+          ]
+        },
+        "dbo.ThreeKey": {
+          "schema": "dbo",
+          "name": "ThreeKey",
+          "type": "SqlUserDefinedTableType",
+          "memory_optimized": false,
+          "columns": [
+            {
+              "name": "A",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null,
+              "key_ordinal": 1
+            },
+            {
+              "name": "B",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null,
+              "key_ordinal": 2
+            },
+            {
+              "name": "C",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null,
+              "key_ordinal": 3
+            }
+          ]
+        },
+        "dbo.NoKey": {
+          "schema": "dbo",
+          "name": "NoKey",
+          "type": "SqlUserDefinedTableType",
+          "memory_optimized": false,
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            }
+          ]
+        },
+        "dbo.TvpBound": {
+          "schema": "dbo",
+          "name": "TvpBound",
+          "type": "SqlUserDefinedTableType",
+          "memory_optimized": false,
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            }
+          ]
+        },
+        "dbo.TvpExcluded": {
+          "schema": "dbo",
+          "name": "TvpExcluded",
+          "type": "SqlUserDefinedTableType",
+          "memory_optimized": false,
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": false,
+              "identity": null,
+              "computed": null,
+              "default": null
+            }
+          ]
+        },
+        "dbo.KeepMe": {
+          "schema": "dbo",
+          "name": "KeepMe",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE PROCEDURE [dbo].[KeepMe] AS BEGIN SELECT 1 END"
+        },
+        "dbo.UsesTvp": {
+          "schema": "dbo",
+          "name": "UsesTvp",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE PROCEDURE [dbo].[UsesTvp] @p [dbo].[Tvp] READONLY AS BEGIN SELECT 1 END"
+        },
+        "dbo.NeedsZed": {
+          "schema": "dbo",
+          "name": "NeedsZed",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE PROCEDURE [dbo].[NeedsZed] AS BEGIN SELECT 1 END"
+        },
+        "dbo.IssueMaster": {
+          "schema": "dbo",
+          "name": "IssueMaster",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [dbo].[IssueMaster] AS SELECT Id FROM Olives_OWMS.dbo.Items"
+        },
+        "t.Wrap": {
+          "schema": "t",
+          "name": "Wrap",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [t].[Wrap] AS SELECT * FROM dbo.[Parent]"
+        },
+        "dbo.V2": {
+          "schema": "dbo",
+          "name": "V2",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [dbo].[V2] AS SELECT Id FROM dbo.V1"
+        },
+        "dbo.V1": {
+          "schema": "dbo",
+          "name": "V1",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [dbo].[V1] AS SELECT Id FROM dbo.[Parent]"
+        },
+        "dbo.Loop1": {
+          "schema": "dbo",
+          "name": "Loop1",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [dbo].[Loop1] AS SELECT Id FROM dbo.Loop2"
+        },
+        "dbo.Loop2": {
+          "schema": "dbo",
+          "name": "Loop2",
+          "type": "SqlView",
+          "schema_bound": false,
+          "definition": "CREATE VIEW [dbo].[Loop2] AS SELECT Id FROM dbo.Loop1"
+        },
+        "dbo.Caller": {
+          "schema": "dbo",
+          "name": "Caller",
+          "type": "SqlScalarFunction",
+          "schema_bound": false,
+          "definition": "CREATE FUNCTION [dbo].[Caller]() RETURNS int AS BEGIN RETURN dbo.Zee() END"
+        },
+        "dbo.Zee": {
+          "schema": "dbo",
+          "name": "Zee",
+          "type": "SqlScalarFunction",
+          "schema_bound": false,
+          "definition": "CREATE FUNCTION [dbo].[Zee]() RETURNS int AS BEGIN RETURN 1 END"
+        },
+        "dbo.BoundProc": {
+          "schema": "dbo",
+          "name": "BoundProc",
+          "type": "SqlProcedure",
+          "schema_bound": true,
+          "definition": "CREATE PROCEDURE [dbo].[BoundProc] AS BEGIN SELECT 1 END"
+        },
+        "dbo.alpha_hide": {
+          "schema": "dbo",
+          "name": "alpha_hide",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE PROCEDURE [dbo].[alpha_hide] AS BEGIN SELECT 1 END"
+        },
+        "dbo.SecondPass": {
+          "schema": "dbo",
+          "name": "SecondPass",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE OR ALTER PROCEDURE [dbo].[SecondPass] AS BEGIN SELECT 1 END"
+        },
+        "dbo.Noted": {
+          "schema": "dbo",
+          "name": "Noted",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "-- keep me\nCREATE PROCEDURE [dbo].[Noted] AS BEGIN SELECT 1 END"
+        }
+      },
+      "dependencies": [
+        {
+          "from": "dbo.UsesTvp",
+          "to": "dbo.Tvp",
+          "to_class": "TYPE",
+          "referenced_database_name": "aaa"
+        },
+        {
+          "from": "dbo.BoundProc",
+          "to": "dbo.TvpBound",
+          "to_class": "TYPE",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.alpha_hide",
+          "to": "dbo.TvpExcluded",
+          "to_class": "TYPE",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.NeedsZed",
+          "to": "dbo.T",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": "Zed"
+        },
+        {
+          "from": "dbo.IssueMaster",
+          "to": "dbo.Items",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": "Olives_OWMS"
+        },
+        {
+          "from": "t.Wrap",
+          "to": "dbo.Parent",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.V2",
+          "to": "dbo.V1",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.V1",
+          "to": "dbo.Parent",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.Loop1",
+          "to": "dbo.Loop2",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.Loop2",
+          "to": "dbo.Loop1",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        },
+        {
+          "from": "dbo.Caller",
+          "to": "dbo.Zee",
+          "to_class": "OBJECT_OR_COLUMN",
+          "referenced_database_name": null
+        }
+      ]
+    },
+    "Zed": {
+      "objects": {
+        "dbo.T": {
+          "schema": "dbo",
+          "name": "T",
+          "type": "SqlTable",
+          "columns": [
+            {
+              "name": "Id",
+              "type": "int",
+              "max_length": 4,
+              "precision": 10,
+              "scale": 0,
+              "nullable": true,
+              "identity": null,
+              "computed": null,
+              "default": null
+            }
+          ],
+          "indexes": [],
+          "foreign_keys": []
+        },
+        "dbo.OnlyZed": {
+          "schema": "dbo",
+          "name": "OnlyZed",
+          "type": "SqlProcedure",
+          "schema_bound": false,
+          "definition": "CREATE PROCEDURE [dbo].[OnlyZed] AS BEGIN SELECT 1 END"
+        }
+      },
+      "dependencies": []
+    }
+  }
+}

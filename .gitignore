@@ -12,3 +12,38 @@ dist/
 SQL Compare/
 SQL Compare.zip
 .build-cache/
+
+# Backups and database archives
+*.bak
+*.rar
+*.7z
+*BackUp*/
+*backup*/
+Olives_BackUp/
+Olives_BackUp.rar
+
+# Client-specific updates, dumps, and audit artifacts
+Karadheh update/
+*[Kk]aradsheh*
+*[Kk]aradheh*
+columns update/
+client_*_audit/
+output_generated/
+
+# Ad-hoc root scripts (audit, checks, verification, scratch, custom generators)
+/check_*.py
+/audit_*.py
+/verify_*.py
+/scan_*.py
+/scratch_*.py
+/deep_audit.py
+/generate_all_updates.py
+/restore_backups.py
+/test_runner.py
+
+# PyInstaller spec files
+*.spec
+
+# Internal agent workflows / superpowers docs
+docs/superpowers/
+

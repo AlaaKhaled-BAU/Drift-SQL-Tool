@@ -178,7 +178,11 @@ def restore_backup(bak_host_path: Path, db_name: str, log) -> dict:
         log(f"  server confirms [{db_name}] finished restoring despite the dropped connection.")
 
     log(f"restored [{db_name}].")
-    return {"backup_date": str(backup_date), "engine_major_version": sw_version}
+    return {
+        "backup_date": str(backup_date),
+        "engine_major_version": sw_version,
+        "database_name": header.get("DatabaseName"),
+    }
 
 
 def _wait_for_online(db_name: str, log, timeout=900) -> bool:

@@ -230,7 +230,7 @@ def test_rehearse_scratch_lifecycle_restore_run_drop():
     db = db_names[0]
     assert db.startswith("zz_rehearsal_"), f"scratch naming contract broken: {db}"
     # exact lifecycle order: container up -> restore -> connect -> drop
-    assert events[:3] == ["ensure_running", ("restore_backup", "/tmp/opencode/client.bak", db),
+    assert events[:3] == ["ensure_running", ("restore_backup", str(Path("/tmp/opencode/client.bak")), db),
                           ("connect", db)]
     assert events[-1] == ("drop_database", db)
     assert cur.executed == ["S1", "S2"], "statements ran against the scratch cursor"
