@@ -50,7 +50,15 @@ class TestLiveDatabases(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertEqual(
             body["databases"],
-            ["Olives_BO", "OSFA_DB", "Olives_Log", "Olives_Images"],
+            [
+                "Olives_BO",
+                "Olives_POS",
+                "OSFA_DB",
+                "olives_PEEK",
+                "Olives_Log",
+                "OtherDb",
+                "Olives_Images",
+            ],
         )
         mock_cur.execute.assert_called_once()
         sql = mock_cur.execute.call_args[0][0]
