@@ -170,6 +170,7 @@ BEGIN
  BEGIN
   SELECT 'keep'
   SELECT 'b'
+  SELECT 'mid'
  END
 END"""
         client = """CREATE PROCEDURE [dbo].[zz_keep]
@@ -178,6 +179,7 @@ BEGIN
  IF @ClientActive = 66
  BEGIN
   SELECT 'keep'
+  SELECT 'mid'
   SELECT 'extra'
  END
 END"""

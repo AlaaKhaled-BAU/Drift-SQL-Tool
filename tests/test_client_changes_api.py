@@ -13,6 +13,7 @@ BEGIN
  BEGIN
   SELECT 'arm'
   SELECT 'b'
+  SELECT 'mid'
  END
 END"""
 
@@ -22,6 +23,7 @@ BEGIN
  IF @ClientActive = 66
  BEGIN
   SELECT 'arm'
+  SELECT 'mid'
   SELECT 'extra'
  END
 END"""
