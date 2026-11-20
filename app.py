@@ -15,7 +15,7 @@ import pymssql
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from drift import (ai, ai_merge, blocks, classify, compare, config, datacopy, diff_render, diffing,
+from drift import (ai, ai_merge, blocks, classify, client_changes, compare, config, datacopy, diff_render, diffing,
                    docker_mgmt, executor, full_update, gatewrap, ledger, livescan, metrics, pipeline,
                    profiles, proc_lens, restore, scriptgen, statements, webdeploy)
 from drift.apply_session import ApplySession, Decision
@@ -389,6 +389,73 @@ def api_proc_lens():
         direction=direction or "client_to_105",
     )
     return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.post("/api/run/<run_id>/client_changes")
+def api_client_changes(run_id):
+    """Classify client_to_105 findings for the Client changes list."""
+    run = _load_run(run_id)
+    if not run or "client_to_105" not in run.get("workspaces", {}):
+        return jsonify({"error": "unknown run"}), 404
+    body = request.get_json(silent=True) or {}
+    client_active_id = body.get("client_active_id")
+    rows = []
+    needs = False
+    for summary in run["workspaces"]["client_to_105"].get("findings") or []:
+        full = _finding_full(run, "client_to_105", summary["id"]) or summary
+        verdict = client_changes.classify_client_change(full, client_active_id)
+        if verdict["kind"] == "needs_client_active":
+            needs = True
+        public = {k: v for k, v in summary.items() if k not in ("master_def", "client_def")}
+        public.update(verdict)
+        rows.append(public)
+    return jsonify({"rows": rows, "needs_client_active": needs})
+
+
+@app.post("/api/run/<run_id>/client_changes/inspect")
+def api_client_changes_inspect(run_id):
+    """Trimmed split diffs for procedures the user selected.
+
+    Trimming is proc_lens.compare_procs(lens="active_read"), which calls
+    trim_procedure. The hunks are diff_render.render_split_diff, the same
+    renderer as /api/diff_preview.
+    """
+    run = _load_run(run_id)
+    if not run or "client_to_105" not in run.get("workspaces", {}):
+        return jsonify({"error": "unknown run"}), 404
+    body = request.get_json(silent=True) or {}
+    client_active_id = body.get("client_active_id")
+    if client_active_id is None or str(client_active_id).strip() == "":
+        return jsonify({"error": "client_active_id required"}), 400
+    diffs = {}
+    for finding_id in body.get("finding_ids") or []:
+        full = _finding_full(run, "client_to_105", finding_id)
+        if not full or full.get("type") != "SqlProcedure":
+            diffs[finding_id] = {"ok": False, "reason": "unknown procedure", "header": "", "hunks": [], "identical": False, "added_only": False}
+            continue
+        if full.get("role") == "added" or not (full.get("master_def") or "").strip():
+            diffs[finding_id] = {
+                "ok": True, "reason": None, "identical": False, "hunks": [], "added_only": True,
+                "header": "Only on the client. 105 has no copy to put beside it.",
+            }
+            continue
+        lens = proc_lens.compare_procs(
+            full.get("master_def") or "", full.get("client_def") or "",
+            client_active_id, "active_read", direction="client_to_105",
+        )
+        if not lens.get("ok"):
+            diffs[finding_id] = {"ok": False, "reason": lens.get("reason") or "trim failed", "header": "", "hunks": [], "identical": False, "added_only": False}
+            continue
+        rich = diff_render.render_split_diff(lens.get("preview_left") or "", lens.get("preview_right") or "")
+        diffs[finding_id] = {
+            "ok": True,
+            "reason": lens.get("warning"),
+            "identical": bool(lens.get("identical")),
+            "added_only": False,
+            "header": f"Trimmed to ClientActive {client_active_id}. Branches this client does not run are hidden on both sides.",
+            "hunks": rich["hunks"],
+        }
+    return jsonify({"diffs": diffs})
 
 
 def _conn_params(side: dict, label: str) -> tuple[str, str, str, str] | None:
