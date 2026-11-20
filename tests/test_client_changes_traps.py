@@ -214,6 +214,27 @@ class TableColumnTraps(unittest.TestCase):
         self.assertTrue(got["list"])
         self.assertEqual(got["inspect"], "immediate")
 
+    def test_empty_column_delta_stays_listed(self):
+        """Trap: a modified table whose column lists are empty, such as an index-only change. Failure means non-column drift was dropped."""
+        got = classify_client_change(self._table({"added": [], "removed": [], "retyped": []}), None)
+        self.assertTrue(got["list"])
+        self.assertEqual(got["kind"], "modified")
+
+    def test_columns_flags_removed_only_stays_off_when_full_columns_are_missing(self):
+        """Trap: index.json columns_flags say the client only lacks 105 columns, and .columns.json was not loaded. Failure means that table was listed."""
+        row = self._table(None)
+        row["columns_flags"] = {"added": False, "removed": True, "retyped": False}
+        got = classify_client_change(row, None)
+        self.assertFalse(got["list"])
+        self.assertEqual(got["kind"], "only_on_105")
+
+    def test_full_columns_win_over_stale_flags(self):
+        """Trap: columns_flags say removed-only, but the loaded columns include a client-added column. Failure means the flag hid a real client column."""
+        row = self._table({"added": ["ExtraCol"], "removed": [], "retyped": []})
+        row["columns_flags"] = {"added": False, "removed": True, "retyped": False}
+        got = classify_client_change(row, None)
+        self.assertTrue(got["list"])
+
     def test_modified_table_without_column_detail_is_listed(self):
         """Trap: no columns key, so the evidence is unknown. Failure means unknown table drift was silently dropped."""
         got = classify_client_change(self._table(None), 66)
@@ -460,7 +481,11 @@ class FlaskRouteTraps(unittest.TestCase):
         Path(str(base) + ".master.sql").write_text(master, encoding="utf-8")
         Path(str(base) + ".client.sql").write_text(client, encoding="utf-8")
         Path(str(added_dir / "zz_new") + ".client.sql").write_text(
-            "CREATE PROCEDURE dbo.zz_new AS SELECT 1", encoding="utf-8")
+            "CREATE PROCEDURE dbo.zz_new AS\n"
+            "BEGIN\n IF @ClientActive = 66\n BEGIN\n  SELECT 'new-arm'\n END\n"
+            " ELSE\n BEGIN\n  SELECT 'else-added-secret'\n END\nEND",
+            encoding="utf-8",
+        )
         Path(str(proc_dir / "Orders") + ".master.sql").write_text(
             "CREATE TABLE dbo.Orders(SECRET_MASTER int)", encoding="utf-8")
         self._runs.clear()
@@ -520,14 +545,36 @@ class FlaskRouteTraps(unittest.TestCase):
         self.assertNotIn("else-secret", raw)
         self.assertNotIn("else-other", raw)
 
-    def test_inspect_added_procedure_is_added_only_with_no_hunks_or_copy(self):
-        """Trap: a new procedure is given a fake side-by-side or a copy_sql payload. Failure means inspect tried to trim a one-sided object."""
+    def test_inspect_added_procedure_shows_the_trimmed_client_text(self):
+        """Trap: a new procedure opens the raw body, so another client's ELSE is visible. Failure means inspect skipped the trimmer."""
         res = self.client.post(
             f"/api/run/{self.run_id}/client_changes/inspect",
             json={"client_active_id": 66, "finding_ids": ["added1"]},
         )
         diff = res.get_json()["diffs"]["added1"]
+        raw = res.get_data(as_text=True)
         self.assertTrue(diff["ok"])
         self.assertTrue(diff["added_only"])
-        self.assertEqual(diff["hunks"], [])
+        self.assertTrue(diff["hunks"])
         self.assertNotIn("copy_sql", diff)
+        self.assertNotIn("else-added-secret", raw)
+        blob = " ".join(_texts(diff["hunks"], "insert"))
+        self.assertIn("new-arm", blob)
+
+    def test_list_route_uses_the_posted_name_rules(self):
+        """Trap: a loosened Scripts filter is ignored and the default integ exclusion still hides the name. Failure means the dialog rules never reached classify."""
+        findings = json.loads((self.run_dir / "client_to_105" / "index.json").read_text(encoding="utf-8"))
+        findings["findings"].append({
+            "id": "integ1", "type": PROC, "role": "added", "category": "structural",
+            "name": "dbo.ABS_Integ_GetDataFromAPI", "bare_name": "ABS_Integ_GetDataFromAPI",
+            "path": "01_added/integ",
+        })
+        (self.run_dir / "client_to_105" / "index.json").write_text(json.dumps(findings), encoding="utf-8")
+        from app import RUNS
+        RUNS.pop(self.run_id, None)
+        res = self.client.post(
+            f"/api/run/{self.run_id}/client_changes",
+            json={"client_active_id": 66, "rules": []},
+        )
+        rows = {row["id"]: row for row in res.get_json()["rows"]}
+        self.assertTrue(rows["integ1"]["list"])

@@ -1985,10 +1985,16 @@ function renderMetricsHtml(m, direction) {
   </table>`;
 }
 
+function clientActiveIdValue() {
+  const cidEl = document.getElementById("compareClientActiveId");
+  if (!cidEl || String(cidEl.value).trim() === "") return null;
+  const n = Number(cidEl.value);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function classifyClientChanges() {
   INSPECTED_DIFFS = {};
-  const cidEl = document.getElementById("compareClientActiveId");
-  const clientActiveId = cidEl && cidEl.value ? Number(cidEl.value) : null;
+  const clientActiveId = clientActiveIdValue();
   if (!CURRENT_RUN_ID) {
     CHANGE_ROWS = [];
     renderClientChanges();
@@ -1997,7 +2003,10 @@ async function classifyClientChanges() {
   const { ok, body } = await getJSON(`/api/run/${CURRENT_RUN_ID}/client_changes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_active_id: clientActiveId }),
+    body: JSON.stringify({
+      client_active_id: clientActiveId,
+      rules: Array.isArray(fullUpdateRules) ? fullUpdateRules : null,
+    }),
   });
   if (!ok) {
     changeStatus(body.error || "Could not classify changes", true);
@@ -2083,9 +2092,8 @@ function openListedChange(id) {
 }
 
 async function inspectProcedures(ids) {
-  const cidEl = document.getElementById("compareClientActiveId");
-  const clientActiveId = cidEl && cidEl.value ? Number(cidEl.value) : null;
-  if (!clientActiveId) {
+  const clientActiveId = clientActiveIdValue();
+  if (clientActiveId === null) {
     changeStatus("Enter a ClientActive ID and show changes again. Procedures were not compared.", true);
     return;
   }
@@ -2129,10 +2137,9 @@ function renderInspectedDiff(id, name) {
     diff.innerHTML = `<div class="hint">${escapeHtml((body && body.reason) || "No diff")}</div>`;
     return;
   }
-  if (body.added_only) {
+  if (body.added_only && !(body.hunks && body.hunks.length)) {
     diff.innerHTML = `<div class="run-actions"><strong>${escapeHtml(name)}</strong></div>
-      <div id="richdiff_client_to_105_${id}"></div>`;
-    loadRichDiff("client_to_105", id);
+      <p class="hint">${escapeHtml(body.header || "Only on the client. 105 has no copy to put beside it.")}</p>`;
     return;
   }
   const stats = pairDiffStats(body.hunks);

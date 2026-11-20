@@ -38,10 +38,8 @@ def classify_client_change(finding: dict, client_active_id, rules=None) -> dict:
     if role == "added":
         inspect = "procedure" if finding.get("type") == "SqlProcedure" else "immediate"
         return {"list": True, "kind": "added", "inspect": inspect, "reason": None}
-    if finding.get("type") == "SqlTable" and role == "modified" and finding.get("columns"):
-        cols = finding["columns"]
-        if not cols.get("added") and not cols.get("retyped"):
-            return _off("only_on_105")
+    if finding.get("type") == "SqlTable" and role == "modified" and _columns_only_on_105(finding):
+        return _off("only_on_105")
     if finding.get("type") != "SqlProcedure" or role != "modified":
         inspect = "immediate" if role == "modified" else None
         listed = role == "modified"
@@ -69,3 +67,17 @@ def classify_client_change(finding: dict, client_active_id, rules=None) -> dict:
 
 def _off(kind: str, reason: str | None = None) -> dict:
     return {"list": False, "kind": kind, "inspect": None, "reason": reason}
+
+
+def _columns_only_on_105(finding: dict) -> bool:
+    """True when the only column evidence is columns 105 has and the client lacks.
+
+    An empty column delta (index-only or other non-column drift) stays listed.
+    Full `columns` wins over the compact `columns_flags` on the index row.
+    """
+    cols = finding.get("columns")
+    if not isinstance(cols, dict):
+        cols = finding.get("columns_flags")
+    if not isinstance(cols, dict):
+        return False
+    return bool(cols.get("removed")) and not cols.get("added") and not cols.get("retyped")
